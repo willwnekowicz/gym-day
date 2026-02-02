@@ -55,6 +55,19 @@ const MOTIVATING_PHRASES = [
   "On fire today"
 ];
 
+const REST_DAY_QUOTES = [
+  "Well deserved rest",
+  "Amazing streak - time to recover",
+  "6 in a row! Take it easy",
+  "Your muscles thank you",
+  "Recovery is part of the gains",
+  "Champions know when to rest",
+  "Recharge for the next 6",
+  "Rest day = growth day",
+  "You've earned this",
+  "Let your body rebuild",
+];
+
 const INITIAL_QUEUES = {
   pushUpper: [
     "Hammer Strength Chest Press",
@@ -138,6 +151,15 @@ const COLORS = {
     sectionGradient: 'rgba(74, 144, 217, 0.05)',
     stampColor: 'rgba(74, 144, 217, 0.18)',
   },
+  rest: {
+    primary: '#2E7D32',
+    secondary: '#4CAF50',
+    bg: '#E8F5E9',
+    bgGradientEnd: '#C8E6C9',
+    subtle: '#C8E6C9',
+    sectionGradient: 'rgba(46, 125, 50, 0.05)',
+    stampColor: 'rgba(46, 125, 50, 0.18)',
+  },
   text: {
     primary: '#1A1A1A',
     secondary: '#666666',
@@ -182,25 +204,94 @@ function getDateLabel(dateKey) {
   return "Past Workout";
 }
 
-// Generate seed data - creates ~20 workout entries spread over the last 45 days
+// Count consecutive completed workouts ending at the most recent completion
+// Returns 0 if no completions, otherwise counts back from most recent
+function getConsecutiveWorkouts(completions) {
+  const sortedDates = Object.keys(completions).sort().reverse();
+  if (sortedDates.length === 0) return 0;
+
+  let count = 0;
+  for (const dateKey of sortedDates) {
+    // Check if this completion is a rest day (skip it)
+    if (completions[dateKey].type === 'rest') continue;
+    count++;
+  }
+  return count;
+}
+
+// Check if a specific date should be a rest day based on completions before it
+function isRestDay(completions, dateKey) {
+  const sortedDates = Object.keys(completions).filter(d => d < dateKey).sort().reverse();
+  let consecutiveCount = 0;
+
+  for (const date of sortedDates) {
+    if (completions[date].type === 'rest') {
+      // A rest day resets the counter
+      break;
+    }
+    consecutiveCount++;
+    if (consecutiveCount >= 6) return true;
+  }
+  return false;
+}
+
+// Check if today should be a rest day (6 consecutive workouts completed before today)
+function shouldShowRestDay(completions, todayKey) {
+  // Don't show rest day if today is already completed
+  if (completions[todayKey]) return false;
+  return isRestDay(completions, todayKey);
+}
+
+// Generate seed data - creates ~20 workout entries spread over 45 days
+// with a guaranteed streak of 6 consecutive workouts at the end to trigger rest day
 function generateSeedData(currentQueues, currentDayType) {
   const completions = {};
   const queues = JSON.parse(JSON.stringify(currentQueues));
   let dayType = currentDayType;
 
-  // Create about 20 workout entries spread over 45 days (simulating ~3-4 workouts per week)
+  // Days 7-45 ago: realistic spread with ~55% skip rate
   const daysToSkip = new Set();
-  // Skip about 55% of days to simulate realistic workout frequency
-  for (let i = 1; i <= 45; i++) {
+  for (let i = 7; i <= 45; i++) {
     if (Math.random() < 0.55) {
       daysToSkip.add(i);
     }
   }
 
-  // Generate data going backwards from yesterday
-  for (let i = 45; i >= 1; i--) {
+  // Generate data going backwards from 45 days ago to 7 days ago (spread data)
+  for (let i = 45; i >= 7; i--) {
     if (daysToSkip.has(i)) continue;
 
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+    const isPush = dayType === 'push';
+    const upperKey = isPush ? 'pushUpper' : 'pullUpper';
+    const lowerKey = isPush ? 'pushLower' : 'pullLower';
+
+    completions[dateKey] = {
+      type: dayType,
+      upperExercise: queues[upperKey][0],
+      lowerExercise: queues[lowerKey][0],
+      abExercise: queues.abs[0],
+    };
+
+    // Rotate queues
+    const rotateQueue = (key) => {
+      const queue = [...queues[key]];
+      queue.push(queue.shift());
+      queues[key] = queue;
+    };
+    rotateQueue(upperKey);
+    rotateQueue(lowerKey);
+    rotateQueue('abs');
+
+    // Alternate days
+    dayType = dayType === 'push' ? 'pull' : 'push';
+  }
+
+  // Days 1-6: guaranteed consecutive streak to trigger rest day
+  for (let i = 6; i >= 1; i--) {
     const date = new Date();
     date.setDate(date.getDate() - i);
     const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -306,30 +397,28 @@ function WorkoutPage({
                 <Text style={styles.exerciseLabel}>UPPER</Text>
                 <Text style={styles.exerciseName}>{upperExercise}</Text>
               </View>
-              <View style={[styles.skipBtn, { backgroundColor: canSkip ? colors.subtle : 'transparent' }]}>
-                {canSkip ? (
-                  <TouchableOpacity onPress={() => onSkip(isPush ? 'pushUpper' : 'pullUpper')}>
-                    <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <Text style={[styles.skipBtnText, { color: 'transparent' }]}>Skip</Text>
-                )}
-              </View>
+              {canSkip && (
+                <TouchableOpacity
+                  style={[styles.changeBtn, { backgroundColor: colors.subtle }]}
+                  onPress={() => onSkip(isPush ? 'pushUpper' : 'pullUpper')}
+                >
+                  <Text style={[styles.changeBtnIcon, { color: colors.primary }]}>↻</Text>
+                </TouchableOpacity>
+              )}
             </View>
             <View style={[styles.exercise, styles.exerciseLast]}>
               <View style={styles.exerciseInfo}>
                 <Text style={styles.exerciseLabel}>LOWER</Text>
                 <Text style={styles.exerciseName}>{lowerExercise}</Text>
               </View>
-              <View style={[styles.skipBtn, { backgroundColor: canSkip ? colors.subtle : 'transparent' }]}>
-                {canSkip ? (
-                  <TouchableOpacity onPress={() => onSkip(isPush ? 'pushLower' : 'pullLower')}>
-                    <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <Text style={[styles.skipBtnText, { color: 'transparent' }]}>Skip</Text>
-                )}
-              </View>
+              {canSkip && (
+                <TouchableOpacity
+                  style={[styles.changeBtn, { backgroundColor: colors.subtle }]}
+                  onPress={() => onSkip(isPush ? 'pushLower' : 'pullLower')}
+                >
+                  <Text style={[styles.changeBtnIcon, { color: colors.primary }]}>↻</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </LinearGradient>
@@ -347,15 +436,14 @@ function WorkoutPage({
               <View style={styles.exerciseInfo}>
                 <Text style={styles.exerciseName}>{abExercise}</Text>
               </View>
-              <View style={[styles.skipBtn, { backgroundColor: canSkip ? colors.subtle : 'transparent' }]}>
-                {canSkip ? (
-                  <TouchableOpacity onPress={() => onSkip('abs')}>
-                    <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <Text style={[styles.skipBtnText, { color: 'transparent' }]}>Skip</Text>
-                )}
-              </View>
+              {canSkip && (
+                <TouchableOpacity
+                  style={[styles.changeBtn, { backgroundColor: colors.subtle }]}
+                  onPress={() => onSkip('abs')}
+                >
+                  <Text style={[styles.changeBtnIcon, { color: colors.primary }]}>↻</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </LinearGradient>
@@ -373,6 +461,62 @@ function WorkoutPage({
         <View style={styles.stampContainer} pointerEvents="none">
           <View style={[styles.stampBorder, { borderColor: colors.stampColor }]}>
             <Text style={[styles.stampText, { color: colors.stampColor }]}>DONE</Text>
+          </View>
+        </View>
+      )}
+    </Animated.View>
+  );
+}
+
+// Rest Day page component
+function RestDayPage({
+  headerLabel,
+  displayDate,
+  quote,
+  showDoneStamp,
+  style,
+  animatedStyle,
+  footerContent,
+}) {
+  const colors = COLORS.rest;
+
+  return (
+    <Animated.View style={[styles.page, { backgroundColor: colors.bg }, style, animatedStyle]}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={[styles.dayLabel, { color: colors.primary }]}>
+          {headerLabel}
+        </Text>
+        <Text style={styles.title}>Rest Day</Text>
+        <Text style={styles.date}>{displayDate}</Text>
+      </View>
+
+      {/* Content */}
+      <View style={styles.restDayContent}>
+        <LinearGradient
+          colors={[colors.sectionGradient, 'transparent']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+          style={styles.restDayQuoteContainer}
+        >
+          <Text style={[styles.restDayQuote, { color: colors.primary }]}>"{quote}"</Text>
+          <Text style={styles.restDaySubtext}>6 workouts completed in a row!</Text>
+          <Text style={styles.restDayEmoji}>🌿</Text>
+        </LinearGradient>
+      </View>
+
+      {/* Footer */}
+      {footerContent && (
+        <View style={styles.footer}>
+          {footerContent}
+        </View>
+      )}
+
+      {/* DONE Stamp - rendered last to be on top */}
+      {showDoneStamp && (
+        <View style={styles.stampContainer} pointerEvents="none">
+          <View style={[styles.stampBorder, { borderColor: colors.stampColor }]}>
+            <Text style={[styles.stampText, { color: colors.stampColor }]}>REST</Text>
           </View>
         </View>
       )}
@@ -429,6 +573,14 @@ export default function App() {
   const { queues, currentDay, completions } = state;
   const today = getToday();
   const completedToday = completions[today];
+
+  // Check if today should be a rest day
+  const todayIsRestDay = shouldShowRestDay(completions, today);
+
+  // Get a stable random rest day quote
+  const restDayQuote = useMemo(() => {
+    return REST_DAY_QUOTES[Math.floor(Math.random() * REST_DAY_QUOTES.length)];
+  }, []);
 
   // Get sorted list of completed dates (most recent first), excluding today
   // Today is handled separately in the UI
@@ -524,6 +676,17 @@ export default function App() {
       pullLower: 0,
       abs: 0,
     });
+  };
+
+  // Complete rest day - just mark it as done without rotating queues or changing day type
+  const completeRestDay = () => {
+    setState(prev => ({
+      ...prev,
+      completions: {
+        ...prev.completions,
+        [today]: { type: 'rest' }
+      }
+    }));
   };
 
   // Settings overlay functions
@@ -754,9 +917,22 @@ export default function App() {
     if (index < 0 || index >= pastCompletedDates.length) return null;
     const dateKey = pastCompletedDates[index];
     const completion = completions[dateKey];
+
+    // Handle rest days in history
+    if (completion.type === 'rest') {
+      return {
+        isRestDay: true,
+        headerLabel: getDateLabel(dateKey),
+        displayDate: formatDate(new Date(dateKey + 'T12:00:00')),
+        quote: REST_DAY_QUOTES[Math.floor(Math.random() * REST_DAY_QUOTES.length)],
+        showDoneStamp: true,
+      };
+    }
+
     const isPush = completion.type === 'push';
     const colors = isPush ? COLORS.push : COLORS.pull;
     return {
+      isRestDay: false,
       headerLabel: getDateLabel(dateKey),
       dayType: isPush ? 'Push' : 'Pull',
       displayDate: formatDate(new Date(dateKey + 'T12:00:00')),
@@ -796,10 +972,21 @@ export default function App() {
     }
     if (isViewingToday) {
       if (completedToday) {
+        // Show completed rest day
+        if (completedToday.type === 'rest') {
+          return {
+            isRestDay: true,
+            headerLabel: "Today's Rest Day",
+            displayDate: formatDate(new Date()),
+            quote: restDayQuote,
+            showDoneStamp: true,
+          };
+        }
         // Show completed workout with correct type from completion data
         const isPush = completedToday.type === 'push';
         const colors = isPush ? COLORS.push : COLORS.pull;
         return {
+          isRestDay: false,
           headerLabel: "Today's Workout",
           dayType: isPush ? 'Push' : 'Pull',
           displayDate: formatDate(new Date()),
@@ -813,7 +1000,18 @@ export default function App() {
           canSkip: false,
         };
       }
+      // Today is a rest day (not yet completed)
+      if (todayIsRestDay) {
+        return {
+          isRestDay: true,
+          headerLabel: "Today's Rest Day",
+          displayDate: formatDate(new Date()),
+          quote: restDayQuote,
+          showDoneStamp: false,
+        };
+      }
       return {
+        isRestDay: false,
         headerLabel: "Today's Workout",
         dayType: todayIsPush ? 'Push' : 'Pull',
         displayDate: formatDate(new Date()),
@@ -835,9 +1033,19 @@ export default function App() {
     if (isViewingTomorrow) {
       // Swiping right from tomorrow shows today
       if (completedToday) {
+        if (completedToday.type === 'rest') {
+          return {
+            isRestDay: true,
+            headerLabel: "Today's Rest Day",
+            displayDate: formatDate(new Date()),
+            quote: restDayQuote,
+            showDoneStamp: true,
+          };
+        }
         const isPush = completedToday.type === 'push';
         const colors = isPush ? COLORS.push : COLORS.pull;
         return {
+          isRestDay: false,
           headerLabel: "Today's Workout",
           dayType: isPush ? 'Push' : 'Pull',
           displayDate: formatDate(new Date()),
@@ -866,9 +1074,19 @@ export default function App() {
       if (historyIndex === 0) {
         // Swiping left from most recent history goes to today
         if (completedToday) {
+          if (completedToday.type === 'rest') {
+            return {
+              isRestDay: true,
+              headerLabel: "Today's Rest Day",
+              displayDate: formatDate(new Date()),
+              quote: restDayQuote,
+              showDoneStamp: true,
+            };
+          }
           const isPush = completedToday.type === 'push';
           const colors = isPush ? COLORS.push : COLORS.pull;
           return {
+            isRestDay: false,
             headerLabel: "Today's Workout",
             dayType: isPush ? 'Push' : 'Pull',
             displayDate: formatDate(new Date()),
@@ -881,7 +1099,18 @@ export default function App() {
             isPush,
           };
         }
+        // Today is rest day (not completed)
+        if (todayIsRestDay) {
+          return {
+            isRestDay: true,
+            headerLabel: "Today's Rest Day",
+            displayDate: formatDate(new Date()),
+            quote: restDayQuote,
+            showDoneStamp: false,
+          };
+        }
         return {
+          isRestDay: false,
           headerLabel: "Today's Workout",
           dayType: todayIsPush ? 'Push' : 'Pull',
           displayDate: formatDate(new Date()),
@@ -931,134 +1160,239 @@ export default function App() {
 
         {/* Older Page (swipe right reveals - comes from left) */}
         {olderPageData && (
-          <WorkoutPage
-            headerLabel={olderPageData.headerLabel}
-            dayType={olderPageData.dayType}
-            displayDate={olderPageData.displayDate}
-            colors={olderPageData.colors}
-            warmups={olderPageData.warmups}
-            upperExercise={olderPageData.upperExercise}
-            lowerExercise={olderPageData.lowerExercise}
-            abExercise={olderPageData.abExercise}
-            canSkip={false}
-            onSkip={() => {}}
-            isPush={olderPageData.isPush}
-            showDoneStamp={olderPageData.showDoneStamp}
-            style={styles.pageBack}
-            animatedStyle={{
-              transform: [{ translateX: slideAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [-SCREEN_WIDTH, 0],
-              }) }],
-            }}
-            footerContent={
-              <>
-                <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: olderPageData.colors.primary }]}>
-                  <Text style={styles.completeBtnText}>{olderPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
-                </View>
-                <View style={styles.swipeIndicator}>
-                  {[...Array(totalDots)].map((_, i) => (
-                    <View key={i} style={[styles.dot, i === Math.max(0, activeDotIndex - 1) && { backgroundColor: olderPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
-                  ))}
-                </View>
-              </>
-            }
-          />
+          olderPageData.isRestDay ? (
+            <RestDayPage
+              headerLabel={olderPageData.headerLabel}
+              displayDate={olderPageData.displayDate}
+              quote={olderPageData.quote}
+              showDoneStamp={olderPageData.showDoneStamp}
+              style={styles.pageBack}
+              animatedStyle={{
+                transform: [{ translateX: slideAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-SCREEN_WIDTH, 0],
+                }) }],
+              }}
+              footerContent={
+                <>
+                  <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: COLORS.rest.primary }]}>
+                    <Text style={styles.completeBtnText}>Rested</Text>
+                  </View>
+                  <View style={styles.swipeIndicator}>
+                    {[...Array(totalDots)].map((_, i) => (
+                      <View key={i} style={[styles.dot, i === Math.max(0, activeDotIndex - 1) && { backgroundColor: COLORS.rest.primary, transform: [{ scale: 1.2 }] }]} />
+                    ))}
+                  </View>
+                </>
+              }
+            />
+          ) : (
+            <WorkoutPage
+              headerLabel={olderPageData.headerLabel}
+              dayType={olderPageData.dayType}
+              displayDate={olderPageData.displayDate}
+              colors={olderPageData.colors}
+              warmups={olderPageData.warmups}
+              upperExercise={olderPageData.upperExercise}
+              lowerExercise={olderPageData.lowerExercise}
+              abExercise={olderPageData.abExercise}
+              canSkip={false}
+              onSkip={() => {}}
+              isPush={olderPageData.isPush}
+              showDoneStamp={olderPageData.showDoneStamp}
+              style={styles.pageBack}
+              animatedStyle={{
+                transform: [{ translateX: slideAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-SCREEN_WIDTH, 0],
+                }) }],
+              }}
+              footerContent={
+                <>
+                  <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: olderPageData.colors.primary }]}>
+                    <Text style={styles.completeBtnText}>{olderPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
+                  </View>
+                  <View style={styles.swipeIndicator}>
+                    {[...Array(totalDots)].map((_, i) => (
+                      <View key={i} style={[styles.dot, i === Math.max(0, activeDotIndex - 1) && { backgroundColor: olderPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                    ))}
+                  </View>
+                </>
+              }
+            />
+          )
         )}
 
         {/* Current Page */}
         {currentPageData && (
-          <WorkoutPage
-            headerLabel={currentPageData.headerLabel}
-            dayType={currentPageData.dayType}
-            displayDate={currentPageData.displayDate}
-            colors={currentPageData.colors}
-            warmups={currentPageData.warmups}
-            upperExercise={currentPageData.upperExercise}
-            lowerExercise={currentPageData.lowerExercise}
-            abExercise={currentPageData.abExercise}
-            canSkip={currentPageData.canSkip}
-            onSkip={skipExercise}
-            isPush={currentPageData.isPush}
-            showDoneStamp={currentPageData.showDoneStamp}
-            style={styles.pageFront}
-            animatedStyle={{
-              transform: [{ translateX: slideAnim.interpolate({
-                inputRange: [-1, 0, 1],
-                outputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
-              }) }],
-            }}
-            footerContent={
-              isViewingToday && !completedToday ? (
-                <>
-                  <TouchableOpacity
-                    style={[styles.completeBtn, { backgroundColor: currentPageData.colors.primary }]}
-                    onPress={completeDay}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.completeBtnText}>{buttonText}</Text>
-                  </TouchableOpacity>
-                  <View style={styles.swipeIndicator}>
-                    {totalDots > 0 ? (
-                      [...Array(totalDots)].map((_, i) => (
+          currentPageData.isRestDay ? (
+            <RestDayPage
+              headerLabel={currentPageData.headerLabel}
+              displayDate={currentPageData.displayDate}
+              quote={currentPageData.quote}
+              showDoneStamp={currentPageData.showDoneStamp}
+              style={styles.pageFront}
+              animatedStyle={{
+                transform: [{ translateX: slideAnim.interpolate({
+                  inputRange: [-1, 0, 1],
+                  outputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
+                }) }],
+              }}
+              footerContent={
+                isViewingToday && !completedToday ? (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.completeBtn, { backgroundColor: COLORS.rest.primary }]}
+                      onPress={completeRestDay}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.completeBtnText}>Enjoy the rest</Text>
+                    </TouchableOpacity>
+                    <View style={styles.swipeIndicator}>
+                      {totalDots > 0 ? (
+                        [...Array(totalDots)].map((_, i) => (
+                          <View key={i} style={[styles.dot, i === activeDotIndex && { backgroundColor: COLORS.rest.primary, transform: [{ scale: 1.2 }] }]} />
+                        ))
+                      ) : (
+                        <View style={[styles.dot, { backgroundColor: COLORS.rest.primary, transform: [{ scale: 1.2 }] }]} />
+                      )}
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: COLORS.rest.primary }]}>
+                      <Text style={styles.completeBtnText}>Rested</Text>
+                    </View>
+                    <View style={styles.swipeIndicator}>
+                      {[...Array(totalDots)].map((_, i) => (
+                        <View key={i} style={[styles.dot, i === activeDotIndex && { backgroundColor: COLORS.rest.primary, transform: [{ scale: 1.2 }] }]} />
+                      ))}
+                    </View>
+                  </>
+                )
+              }
+            />
+          ) : (
+            <WorkoutPage
+              headerLabel={currentPageData.headerLabel}
+              dayType={currentPageData.dayType}
+              displayDate={currentPageData.displayDate}
+              colors={currentPageData.colors}
+              warmups={currentPageData.warmups}
+              upperExercise={currentPageData.upperExercise}
+              lowerExercise={currentPageData.lowerExercise}
+              abExercise={currentPageData.abExercise}
+              canSkip={currentPageData.canSkip}
+              onSkip={skipExercise}
+              isPush={currentPageData.isPush}
+              showDoneStamp={currentPageData.showDoneStamp}
+              style={styles.pageFront}
+              animatedStyle={{
+                transform: [{ translateX: slideAnim.interpolate({
+                  inputRange: [-1, 0, 1],
+                  outputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
+                }) }],
+              }}
+              footerContent={
+                isViewingToday && !completedToday ? (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.completeBtn, { backgroundColor: currentPageData.colors.primary }]}
+                      onPress={completeDay}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.completeBtnText}>{buttonText}</Text>
+                    </TouchableOpacity>
+                    <View style={styles.swipeIndicator}>
+                      {totalDots > 0 ? (
+                        [...Array(totalDots)].map((_, i) => (
+                          <View key={i} style={[styles.dot, i === activeDotIndex && { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                        ))
+                      ) : (
+                        <View style={[styles.dot, { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                      )}
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: currentPageData.colors.primary }]}>
+                      <Text style={styles.completeBtnText}>{currentPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
+                    </View>
+                    <View style={styles.swipeIndicator}>
+                      {[...Array(totalDots)].map((_, i) => (
                         <View key={i} style={[styles.dot, i === activeDotIndex && { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
-                      ))
-                    ) : (
-                      <View style={[styles.dot, { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
-                    )}
-                  </View>
-                </>
-              ) : (
-                <>
-                  <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: currentPageData.colors.primary }]}>
-                    <Text style={styles.completeBtnText}>{currentPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
-                  </View>
-                  <View style={styles.swipeIndicator}>
-                    {[...Array(totalDots)].map((_, i) => (
-                      <View key={i} style={[styles.dot, i === activeDotIndex && { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
-                    ))}
-                  </View>
-                </>
-              )
-            }
-          />
+                      ))}
+                    </View>
+                  </>
+                )
+              }
+            />
+          )
         )}
 
         {/* Newer Page (swipe left reveals - comes from right) */}
         {newerPageData && (
-          <WorkoutPage
-            headerLabel={newerPageData.headerLabel}
-            dayType={newerPageData.dayType}
-            displayDate={newerPageData.displayDate}
-            colors={newerPageData.colors}
-            warmups={newerPageData.warmups}
-            upperExercise={newerPageData.upperExercise}
-            lowerExercise={newerPageData.lowerExercise}
-            abExercise={newerPageData.abExercise}
-            canSkip={false}
-            onSkip={() => {}}
-            isPush={newerPageData.isPush}
-            showDoneStamp={newerPageData.showDoneStamp}
-            style={styles.pageBack}
-            animatedStyle={{
-              transform: [{ translateX: slideAnim.interpolate({
-                inputRange: [-1, 0],
-                outputRange: [0, SCREEN_WIDTH],
-              }) }],
-            }}
-            footerContent={
-              <>
-                <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: newerPageData.colors.primary }]}>
-                  <Text style={styles.completeBtnText}>{newerPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
-                </View>
-                <View style={styles.swipeIndicator}>
-                  {[...Array(totalDots)].map((_, i) => (
-                    <View key={i} style={[styles.dot, i === Math.min(activeDotIndex + 1, totalDots - 1) && { backgroundColor: newerPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
-                  ))}
-                </View>
-              </>
-            }
-          />
+          newerPageData.isRestDay ? (
+            <RestDayPage
+              headerLabel={newerPageData.headerLabel}
+              displayDate={newerPageData.displayDate}
+              quote={newerPageData.quote}
+              showDoneStamp={newerPageData.showDoneStamp}
+              style={styles.pageBack}
+              animatedStyle={{
+                transform: [{ translateX: slideAnim.interpolate({
+                  inputRange: [-1, 0],
+                  outputRange: [0, SCREEN_WIDTH],
+                }) }],
+              }}
+              footerContent={
+                <>
+                  <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: COLORS.rest.primary }]}>
+                    <Text style={styles.completeBtnText}>{newerPageData.showDoneStamp ? "Rested" : "Rest day"}</Text>
+                  </View>
+                  <View style={styles.swipeIndicator}>
+                    {[...Array(totalDots)].map((_, i) => (
+                      <View key={i} style={[styles.dot, i === Math.min(activeDotIndex + 1, totalDots - 1) && { backgroundColor: COLORS.rest.primary, transform: [{ scale: 1.2 }] }]} />
+                    ))}
+                  </View>
+                </>
+              }
+            />
+          ) : (
+            <WorkoutPage
+              headerLabel={newerPageData.headerLabel}
+              dayType={newerPageData.dayType}
+              displayDate={newerPageData.displayDate}
+              colors={newerPageData.colors}
+              warmups={newerPageData.warmups}
+              upperExercise={newerPageData.upperExercise}
+              lowerExercise={newerPageData.lowerExercise}
+              abExercise={newerPageData.abExercise}
+              canSkip={false}
+              onSkip={() => {}}
+              isPush={newerPageData.isPush}
+              showDoneStamp={newerPageData.showDoneStamp}
+              style={styles.pageBack}
+              animatedStyle={{
+                transform: [{ translateX: slideAnim.interpolate({
+                  inputRange: [-1, 0],
+                  outputRange: [0, SCREEN_WIDTH],
+                }) }],
+              }}
+              footerContent={
+                <>
+                  <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: newerPageData.colors.primary }]}>
+                    <Text style={styles.completeBtnText}>{newerPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
+                  </View>
+                  <View style={styles.swipeIndicator}>
+                    {[...Array(totalDots)].map((_, i) => (
+                      <View key={i} style={[styles.dot, i === Math.min(activeDotIndex + 1, totalDots - 1) && { backgroundColor: newerPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                    ))}
+                  </View>
+                </>
+              }
+            />
+          )
         )}
 
         {/* Settings Overlay */}
@@ -1082,14 +1416,16 @@ export default function App() {
               <View style={styles.settingsHandle} />
               <Text style={styles.settingsTitle}>Settings</Text>
 
-              <TouchableOpacity
-                style={styles.settingsBtn}
-                onPress={seedData}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.settingsBtnText}>Seed Demo Data</Text>
-                <Text style={styles.settingsBtnSubtext}>Load sample workout history</Text>
-              </TouchableOpacity>
+              {__DEV__ && (
+                <TouchableOpacity
+                  style={styles.settingsBtn}
+                  onPress={seedData}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.settingsBtnText}>Seed Demo Data</Text>
+                  <Text style={styles.settingsBtnSubtext}>Load ~month of history + 6-day streak</Text>
+                </TouchableOpacity>
+              )}
 
               {__DEV__ && (
                 <TouchableOpacity
@@ -1208,6 +1544,35 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
   },
+  restDayContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  restDayQuoteContainer: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    paddingHorizontal: 32,
+    borderRadius: 20,
+  },
+  restDayQuote: {
+    fontSize: 28,
+    fontWeight: '600',
+    textAlign: 'center',
+    fontFamily: 'Georgia',
+    fontStyle: 'italic',
+    marginBottom: 16,
+  },
+  restDaySubtext: {
+    fontSize: 16,
+    color: COLORS.text.secondary,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  restDayEmoji: {
+    fontSize: 64,
+  },
   section: {
     marginBottom: 8,
     paddingHorizontal: 24,
@@ -1250,16 +1615,16 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: COLORS.text.primary,
   },
-  skipBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 10,
+  changeBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 12,
   },
-  skipBtnText: {
-    fontSize: 14,
+  changeBtnIcon: {
+    fontSize: 22,
     fontWeight: '600',
   },
   footer: {
