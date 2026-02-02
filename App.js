@@ -4,7 +4,6 @@ import {
   Text,
   View,
   TouchableOpacity,
-  ScrollView,
   Animated,
   PanResponder,
   Dimensions,
@@ -15,7 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const MOTIVATING_PHRASES = [
   "Crushed it",
@@ -47,7 +46,7 @@ const MOTIVATING_PHRASES = [
   "Finished strong",
   "Earn that rest",
   "Time to recover",
-  "Proud of you",
+  "Proud of myself",
   "Absolutely slayed",
   "Boss moves only",
   "That's how it's done",
@@ -148,7 +147,20 @@ const COLORS = {
 };
 
 function getToday() {
-  return new Date().toISOString().split('T')[0];
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function getYesterday() {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function getTomorrow() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function formatDate(date) {
@@ -157,6 +169,72 @@ function formatDate(date) {
     month: 'long',
     day: 'numeric'
   });
+}
+
+function getDateLabel(dateKey) {
+  const today = getToday();
+  const yesterday = getYesterday();
+  const tomorrow = getTomorrow();
+
+  if (dateKey === today) return "Today's Workout";
+  if (dateKey === yesterday) return "Yesterday's Workout";
+  if (dateKey === tomorrow) return "Tomorrow's Workout";
+  return "Past Workout";
+}
+
+// Generate seed data - creates ~20 workout entries spread over the last 45 days
+function generateSeedData(currentQueues, currentDayType) {
+  const completions = {};
+  const queues = JSON.parse(JSON.stringify(currentQueues));
+  let dayType = currentDayType;
+
+  // Create about 20 workout entries spread over 45 days (simulating ~3-4 workouts per week)
+  const daysToSkip = new Set();
+  // Skip about 55% of days to simulate realistic workout frequency
+  for (let i = 1; i <= 45; i++) {
+    if (Math.random() < 0.55) {
+      daysToSkip.add(i);
+    }
+  }
+
+  // Generate data going backwards from yesterday
+  for (let i = 45; i >= 1; i--) {
+    if (daysToSkip.has(i)) continue;
+
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+    const isPush = dayType === 'push';
+    const upperKey = isPush ? 'pushUpper' : 'pullUpper';
+    const lowerKey = isPush ? 'pushLower' : 'pullLower';
+
+    completions[dateKey] = {
+      type: dayType,
+      upperExercise: queues[upperKey][0],
+      lowerExercise: queues[lowerKey][0],
+      abExercise: queues.abs[0],
+    };
+
+    // Rotate queues
+    const rotateQueue = (key) => {
+      const queue = [...queues[key]];
+      queue.push(queue.shift());
+      queues[key] = queue;
+    };
+    rotateQueue(upperKey);
+    rotateQueue(lowerKey);
+    rotateQueue('abs');
+
+    // Alternate days
+    dayType = dayType === 'push' ? 'pull' : 'push';
+  }
+
+  return {
+    queues,
+    currentDay: dayType,
+    completions,
+  };
 }
 
 // Workout page component
@@ -189,10 +267,7 @@ function WorkoutPage({
       </View>
 
       {/* Content */}
-      <ScrollView
-        style={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+      <View style={styles.content}>
         {/* Warm-Ups */}
         <LinearGradient
           colors={[colors.sectionGradient, 'transparent']}
@@ -281,7 +356,7 @@ function WorkoutPage({
             </View>
           </View>
         </LinearGradient>
-      </ScrollView>
+      </View>
 
       {/* Footer */}
       {footerContent && (
@@ -308,9 +383,11 @@ export default function App() {
     currentDay: 'push',
     completions: {}
   });
-  const [viewingCompleted, setViewingCompleted] = useState(true);
+  const [historyIndex, setHistoryIndex] = useState(null); // null = today, 0+ = index into completed history
   const [isLoaded, setIsLoaded] = useState(false);
-  const slideAnim = useRef(new Animated.Value(0)).current; // 0 = completed, 1 = tomorrow
+  const [showSettings, setShowSettings] = useState(false);
+  const slideAnim = useRef(new Animated.Value(0)).current; // 0 = current page, 1 = next page (tomorrow or newer)
+  const settingsAnim = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
 
   // Track temporary skip indices for today's session (not persisted)
   const [skipIndices, setSkipIndices] = useState({
@@ -350,116 +427,29 @@ export default function App() {
   const today = getToday();
   const completedToday = completions[today];
 
-  // Animate to specific page
-  const animateToPage = (toCompleted, duration = 400) => {
-    Animated.timing(slideAnim, {
-      toValue: toCompleted ? 0 : 1,
-      duration,
-      easing: Easing.bezier(0.32, 0.72, 0, 1), // iOS spring-like curve
-      useNativeDriver: true,
-    }).start(() => {
-      setViewingCompleted(toCompleted);
-    });
-  };
+  // Get sorted list of completed dates (most recent first), excluding today
+  // Today is handled separately in the UI
+  const pastCompletedDates = useMemo(() => {
+    const todayKey = getToday();
+    return Object.keys(completions).filter(d => d !== todayKey).sort().reverse();
+  }, [completions]);
 
-  // Pan responder for swipe gestures - high-end iOS-like behavior
-  const panResponder = useMemo(() => {
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => !!completedToday,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        return !!completedToday && Math.abs(gestureState.dx) > 10;
-      },
-      onPanResponderMove: (_, gestureState) => {
-        if (!completedToday) return;
-        // Convert dx to 0-1 range (0 = completed, 1 = tomorrow)
-        const currentBase = viewingCompleted ? 0 : 1;
-        const progress = currentBase - (gestureState.dx / SCREEN_WIDTH);
-        // Clamp between 0 and 1 with slight overscroll resistance
-        const clamped = Math.max(-0.1, Math.min(1.1, progress));
-        slideAnim.setValue(clamped);
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        if (!completedToday) return;
+  // Viewing state: -1 = tomorrow, null = today, 0+ = history index into pastCompletedDates
+  const isViewingTomorrow = historyIndex === -1;
+  const isViewingToday = historyIndex === null;
+  const isViewingHistory = historyIndex !== null && historyIndex >= 0;
 
-        const threshold = SCREEN_WIDTH * 0.2;
-        const velocityThreshold = 0.5;
-        const currentBase = viewingCompleted ? 0 : 1;
-        const progress = currentBase - (gestureState.dx / SCREEN_WIDTH);
+  // Can we navigate? Use refs to avoid stale closures in pan responder
+  const canGoToHistory = pastCompletedDates.length > 0;
+  const canGoOlder = isViewingHistory && historyIndex < pastCompletedDates.length - 1;
+  const canGoNewer = isViewingHistory && historyIndex > 0;
+  const canGoBackToToday = isViewingHistory;
+  const canGoToTomorrow = isViewingToday && !!completedToday; // Can see tomorrow preview after completing today
 
-        // Determine target based on position and velocity
-        let targetCompleted;
-        if (Math.abs(gestureState.vx) > velocityThreshold) {
-          // Velocity-based decision
-          targetCompleted = gestureState.vx > 0;
-        } else if (gestureState.dx > threshold) {
-          targetCompleted = true;
-        } else if (gestureState.dx < -threshold) {
-          targetCompleted = false;
-        } else {
-          targetCompleted = viewingCompleted;
-        }
+  // Keep refs updated for pan responder
+  const stateRef = useRef({ historyIndex, completedToday, pastCompletedDates });
+  stateRef.current = { historyIndex, completedToday, pastCompletedDates };
 
-        // Calculate remaining distance for proportional duration
-        const targetValue = targetCompleted ? 0 : 1;
-        const distance = Math.abs(progress - targetValue);
-        const duration = Math.max(150, Math.min(400, distance * 500));
-
-        Animated.timing(slideAnim, {
-          toValue: targetValue,
-          duration,
-          easing: Easing.bezier(0.32, 0.72, 0, 1),
-          useNativeDriver: true,
-        }).start(() => {
-          setViewingCompleted(targetCompleted);
-        });
-      },
-    });
-  }, [completedToday, slideAnim, viewingCompleted]);
-
-  // Data for completed page (left page)
-  const completedDay = completedToday ? completedToday.type : currentDay;
-  const completedIsPush = completedDay === 'push';
-  const completedColors = completedIsPush ? COLORS.push : COLORS.pull;
-  const completedWarmups = WARMUPS[completedDay];
-  const completedUpper = completedToday?.upperExercise || '';
-  const completedLower = completedToday?.lowerExercise || '';
-  const completedAbs = completedToday?.abExercise || '';
-
-  // Data for tomorrow page (right page)
-  const tomorrowIsPush = currentDay === 'push';
-  const tomorrowColors = tomorrowIsPush ? COLORS.push : COLORS.pull;
-  const tomorrowWarmups = WARMUPS[currentDay];
-  const tomorrowUpperKey = tomorrowIsPush ? 'pushUpper' : 'pullUpper';
-  const tomorrowLowerKey = tomorrowIsPush ? 'pushLower' : 'pullLower';
-  const tomorrowUpper = queues[tomorrowUpperKey][0];
-  const tomorrowLower = queues[tomorrowLowerKey][0];
-  const tomorrowAbs = queues.abs[0];
-
-  // Animation interpolations for both pages
-  const completedPageTranslate = slideAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, -SCREEN_WIDTH * 0.3],
-  });
-  const completedPageScale = slideAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0.92],
-  });
-  const completedPageOpacity = slideAnim.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: [1, 0.7, 0.5],
-  });
-
-  const tomorrowPageTranslate = slideAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [SCREEN_WIDTH, 0],
-  });
-  const tomorrowPageScale = slideAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.95, 1],
-  });
-
-  // Current display colors (for footer)
-  const displayColors = viewingCompleted ? completedColors : tomorrowColors;
 
   const buttonText = useMemo(() => {
     return MOTIVATING_PHRASES[Math.floor(Math.random() * MOTIVATING_PHRASES.length)];
@@ -533,6 +523,214 @@ export default function App() {
     });
   };
 
+  // Settings overlay functions
+  const openSettings = () => {
+    setShowSettings(true);
+    Animated.timing(settingsAnim, {
+      toValue: 1,
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeSettings = () => {
+    Animated.timing(settingsAnim, {
+      toValue: 0,
+      duration: 250,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      setShowSettings(false);
+    });
+  };
+
+  const resetData = async () => {
+    await AsyncStorage.removeItem('gymDayState');
+    setState({
+      queues: INITIAL_QUEUES,
+      currentDay: 'push',
+      completions: {},
+    });
+    setSkipIndices({
+      pushUpper: 0,
+      pushLower: 0,
+      pullUpper: 0,
+      pullLower: 0,
+      abs: 0,
+    });
+    setHistoryIndex(null);
+    closeSettings();
+  };
+
+  const seedData = () => {
+    const seeded = generateSeedData(INITIAL_QUEUES, 'push');
+    setState(seeded);
+    setHistoryIndex(null); // Stay on today view
+    closeSettings();
+  };
+
+  // Track pending navigation to prevent flash (use object to distinguish from null historyIndex)
+  const pendingNavRef = useRef({ pending: false, target: null });
+
+  // Reset slideAnim after state change (prevents flash)
+  useEffect(() => {
+    if (pendingNavRef.current.pending) {
+      slideAnim.setValue(0);
+      pendingNavRef.current = { pending: false, target: null };
+    }
+  }, [historyIndex]);
+
+  // Combined pan responder for horizontal swipe (history) and vertical swipe (settings)
+  const combinedPanResponder = useMemo(() => {
+    // Helper to get fresh state from ref
+    const getState = () => {
+      const { historyIndex: hi, completedToday: ct, pastCompletedDates: pcd } = stateRef.current;
+      const viewingTomorrow = hi === -1;
+      const viewingToday = hi === null;
+      const viewingHistory = hi !== null && hi >= 0;
+      const goToHistory = pcd.length > 0;
+      const goOlder = viewingHistory && hi < pcd.length - 1;
+      const goNewer = viewingHistory && hi > 0;
+      const goToTomorrow = viewingToday && !!ct;
+      return { hi, viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goNewer, goToTomorrow };
+    };
+
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+        const isVerticalUp = gestureState.dy < -20 && !isHorizontal;
+        const { viewingTomorrow, goToHistory, goToTomorrow } = getState();
+        // Can swipe if: viewing tomorrow (can go back), have history, or can go to tomorrow
+        const canSwipe = (viewingTomorrow || goToHistory || goToTomorrow) && Math.abs(gestureState.dx) > 10 && isHorizontal;
+        return isVerticalUp || canSwipe;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const { viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goNewer, goToTomorrow } = getState();
+        if (!viewingTomorrow && !goToHistory && !goToTomorrow) return;
+        if (Math.abs(gestureState.dx) > Math.abs(gestureState.dy)) {
+          const progress = gestureState.dx / SCREEN_WIDTH;
+          const goingOlder = progress > 0;
+          const goingNewer = progress < 0;
+          let canGoThisWay = false;
+
+          if (goingOlder) {
+            canGoThisWay = viewingTomorrow || (viewingToday ? goToHistory : goOlder);
+          } else {
+            canGoThisWay = viewingHistory ? (goNewer || viewingHistory) : goToTomorrow;
+          }
+
+          let clamped = progress;
+          if (!canGoThisWay) {
+            clamped = progress * 0.3;
+          } else {
+            clamped = Math.max(-1.1, Math.min(1.1, progress));
+          }
+          slideAnim.setValue(clamped);
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+
+        if (!isHorizontal && (gestureState.dy < -50 || gestureState.vy < -0.5)) {
+          openSettings();
+          return;
+        }
+
+        const { hi, viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goToTomorrow } = getState();
+
+        if ((viewingTomorrow || goToHistory || goToTomorrow) && isHorizontal) {
+          const threshold = SCREEN_WIDTH * 0.2;
+          const velocityThreshold = 0.5;
+
+          let wantsOlder = false;
+          let wantsNewer = false;
+
+          if (Math.abs(gestureState.vx) > velocityThreshold) {
+            wantsOlder = gestureState.vx > 0;
+            wantsNewer = gestureState.vx < 0;
+          } else if (Math.abs(gestureState.dx) > threshold) {
+            wantsOlder = gestureState.dx > 0;
+            wantsNewer = gestureState.dx < 0;
+          }
+
+          const duration = 250;
+
+          if (wantsOlder) {
+            let canGo = false;
+            let nextIndex = hi;
+
+            if (viewingTomorrow) {
+              canGo = true;
+              nextIndex = null;
+            } else if (viewingToday) {
+              canGo = goToHistory;
+              nextIndex = 0;
+            } else {
+              canGo = goOlder;
+              nextIndex = hi + 1;
+            }
+
+            if (canGo) {
+              pendingNavRef.current = { pending: true, target: nextIndex };
+              Animated.timing(slideAnim, {
+                toValue: 1,
+                duration,
+                easing: Easing.bezier(0.32, 0.72, 0, 1),
+                useNativeDriver: true,
+              }).start(() => {
+                setHistoryIndex(nextIndex);
+              });
+              return;
+            }
+          } else if (wantsNewer) {
+            let canGo = false;
+            let nextIndex = hi;
+
+            if (viewingHistory) {
+              canGo = true;
+              nextIndex = hi === 0 ? null : hi - 1;
+            } else if (viewingToday && goToTomorrow) {
+              canGo = true;
+              nextIndex = -1;
+            }
+
+            if (canGo) {
+              pendingNavRef.current = { pending: true, target: nextIndex };
+              Animated.timing(slideAnim, {
+                toValue: -1,
+                duration,
+                easing: Easing.bezier(0.32, 0.72, 0, 1),
+                useNativeDriver: true,
+              }).start(() => {
+                setHistoryIndex(nextIndex);
+              });
+              return;
+            }
+          }
+
+          Animated.timing(slideAnim, {
+            toValue: 0,
+            duration,
+            easing: Easing.bezier(0.32, 0.72, 0, 1),
+            useNativeDriver: true,
+          }).start();
+        }
+      },
+    });
+  }, [slideAnim]);
+
+  // Settings overlay animation values
+  const settingsTranslateY = settingsAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [SCREEN_HEIGHT, 0],
+  });
+  const settingsBackdropOpacity = settingsAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.5],
+  });
+
   if (!isLoaded) {
     return (
       <View style={[styles.container, { backgroundColor: COLORS.push.bg }]}>
@@ -541,120 +739,376 @@ export default function App() {
     );
   }
 
-  // Single page view (not completed yet)
-  if (!completedToday) {
-    const isPush = currentDay === 'push';
+  // Today's data
+  const todayIsPush = currentDay === 'push';
+  const todayColors = todayIsPush ? COLORS.push : COLORS.pull;
+  const todayWarmups = WARMUPS[currentDay];
+  const todayUpperKey = todayIsPush ? 'pushUpper' : 'pullUpper';
+  const todayLowerKey = todayIsPush ? 'pushLower' : 'pullLower';
+
+  // Get page data for a history index
+  const getHistoryPageData = (index) => {
+    if (index < 0 || index >= pastCompletedDates.length) return null;
+    const dateKey = pastCompletedDates[index];
+    const completion = completions[dateKey];
+    const isPush = completion.type === 'push';
     const colors = isPush ? COLORS.push : COLORS.pull;
-    const warmups = WARMUPS[currentDay];
-    const upperKey = isPush ? 'pushUpper' : 'pullUpper';
-    const lowerKey = isPush ? 'pushLower' : 'pullLower';
+    return {
+      headerLabel: getDateLabel(dateKey),
+      dayType: isPush ? 'Push' : 'Pull',
+      displayDate: formatDate(new Date(dateKey + 'T12:00:00')),
+      colors,
+      warmups: WARMUPS[completion.type],
+      upperExercise: completion.upperExercise,
+      lowerExercise: completion.lowerExercise,
+      abExercise: completion.abExercise,
+      showDoneStamp: true,
+      isPush,
+    };
+  };
 
-    return (
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <View style={[styles.container, { backgroundColor: colors.bg }]}>
-          <StatusBar style="dark" />
-          <WorkoutPage
-            headerLabel="Today's Workout"
-            dayType={isPush ? 'Push' : 'Pull'}
-            displayDate={formatDate(new Date())}
-            colors={colors}
-            warmups={warmups}
-            upperExercise={getExerciseAtIndex(upperKey)}
-            lowerExercise={getExerciseAtIndex(lowerKey)}
-            abExercise={getExerciseAtIndex('abs')}
-            canSkip={true}
-            onSkip={skipExercise}
-            isPush={isPush}
-            showDoneStamp={false}
-            footerContent={
-              <TouchableOpacity
-                style={[styles.completeBtn, { backgroundColor: colors.primary }]}
-                onPress={completeDay}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.completeBtnText}>{buttonText}</Text>
-              </TouchableOpacity>
-            }
-          />
-        </View>
-      </GestureHandlerRootView>
-    );
-  }
+  // Tomorrow's data (preview of next workout after completing today)
+  const getTomorrowPageData = () => {
+    const tomorrowDate = new Date();
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+    return {
+      headerLabel: "Tomorrow's Workout",
+      dayType: todayIsPush ? 'Push' : 'Pull',
+      displayDate: formatDate(tomorrowDate),
+      colors: todayColors,
+      warmups: todayWarmups,
+      upperExercise: queues[todayUpperKey][0],
+      lowerExercise: queues[todayLowerKey][0],
+      abExercise: queues.abs[0],
+      showDoneStamp: false,
+      isPush: todayIsPush,
+      canSkip: false,
+    };
+  };
 
-  // Two page view (completed - can swipe between completed and tomorrow)
+  // Current page data depends on what we're viewing
+  const getCurrentPageData = () => {
+    if (isViewingTomorrow) {
+      return getTomorrowPageData();
+    }
+    if (isViewingToday) {
+      if (completedToday) {
+        // Show completed workout with correct type from completion data
+        const isPush = completedToday.type === 'push';
+        const colors = isPush ? COLORS.push : COLORS.pull;
+        return {
+          headerLabel: "Today's Workout",
+          dayType: isPush ? 'Push' : 'Pull',
+          displayDate: formatDate(new Date()),
+          colors,
+          warmups: WARMUPS[completedToday.type],
+          upperExercise: completedToday.upperExercise,
+          lowerExercise: completedToday.lowerExercise,
+          abExercise: completedToday.abExercise,
+          showDoneStamp: true,
+          isPush,
+          canSkip: false,
+        };
+      }
+      return {
+        headerLabel: "Today's Workout",
+        dayType: todayIsPush ? 'Push' : 'Pull',
+        displayDate: formatDate(new Date()),
+        colors: todayColors,
+        warmups: todayWarmups,
+        upperExercise: getExerciseAtIndex(todayUpperKey),
+        lowerExercise: getExerciseAtIndex(todayLowerKey),
+        abExercise: getExerciseAtIndex('abs'),
+        showDoneStamp: false,
+        isPush: todayIsPush,
+        canSkip: true,
+      };
+    }
+    return getHistoryPageData(historyIndex);
+  };
+
+  // Get the page that appears when swiping right (older content)
+  const getOlderPageData = () => {
+    if (isViewingTomorrow) {
+      // Swiping right from tomorrow shows today
+      if (completedToday) {
+        const isPush = completedToday.type === 'push';
+        const colors = isPush ? COLORS.push : COLORS.pull;
+        return {
+          headerLabel: "Today's Workout",
+          dayType: isPush ? 'Push' : 'Pull',
+          displayDate: formatDate(new Date()),
+          colors,
+          warmups: WARMUPS[completedToday.type],
+          upperExercise: completedToday.upperExercise,
+          lowerExercise: completedToday.lowerExercise,
+          abExercise: completedToday.abExercise,
+          showDoneStamp: true,
+          isPush,
+        };
+      }
+      return null;
+    }
+    if (isViewingToday) {
+      // Swiping right from today shows most recent history
+      return getHistoryPageData(0);
+    }
+    // Swiping right from history shows older history
+    return getHistoryPageData(historyIndex + 1);
+  };
+
+  // Get the page that appears when swiping left (newer content)
+  const getNewerPageData = () => {
+    if (isViewingHistory) {
+      if (historyIndex === 0) {
+        // Swiping left from most recent history goes to today
+        if (completedToday) {
+          const isPush = completedToday.type === 'push';
+          const colors = isPush ? COLORS.push : COLORS.pull;
+          return {
+            headerLabel: "Today's Workout",
+            dayType: isPush ? 'Push' : 'Pull',
+            displayDate: formatDate(new Date()),
+            colors,
+            warmups: WARMUPS[completedToday.type],
+            upperExercise: completedToday.upperExercise,
+            lowerExercise: completedToday.lowerExercise,
+            abExercise: completedToday.abExercise,
+            showDoneStamp: true,
+            isPush,
+          };
+        }
+        return {
+          headerLabel: "Today's Workout",
+          dayType: todayIsPush ? 'Push' : 'Pull',
+          displayDate: formatDate(new Date()),
+          colors: todayColors,
+          warmups: todayWarmups,
+          upperExercise: getExerciseAtIndex(todayUpperKey),
+          lowerExercise: getExerciseAtIndex(todayLowerKey),
+          abExercise: getExerciseAtIndex('abs'),
+          showDoneStamp: false,
+          isPush: todayIsPush,
+        };
+      }
+      // Swiping left from older history shows newer history
+      return getHistoryPageData(historyIndex - 1);
+    }
+    // Swiping left from today shows tomorrow (if today is completed)
+    if (isViewingToday && canGoToTomorrow) {
+      return getTomorrowPageData();
+    }
+    return null;
+  };
+
+  const currentPageData = getCurrentPageData();
+  const olderPageData = getOlderPageData();
+  const newerPageData = getNewerPageData();
+
+  // Dot indicator - dots go from oldest (left) to newest/tomorrow (right)
+  // Total: past history + today + tomorrow (if available)
+  const hasTomorrow = completedToday;
+  const totalDots = Math.min(pastCompletedDates.length + 1 + (hasTomorrow ? 1 : 0), 5);
+
+  // Calculate active dot: rightmost is tomorrow (if available), then today, then history
+  // Index from right: tomorrow=0, today=1, history[0]=2, etc
+  const getActiveDotIndex = () => {
+    if (isViewingTomorrow) return totalDots - 1; // Rightmost
+    if (isViewingToday) return totalDots - 1 - (hasTomorrow ? 1 : 0); // Second from right if tomorrow exists
+    // History: older = more left
+    const historyOffset = hasTomorrow ? 2 : 1; // Offset for tomorrow+today or just today
+    return totalDots - 1 - historyOffset - historyIndex;
+  };
+  const activeDotIndex = Math.max(0, Math.min(getActiveDotIndex(), totalDots - 1));
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <View style={styles.container} {...panResponder.panHandlers}>
+      <View style={styles.container} {...combinedPanResponder.panHandlers}>
         <StatusBar style="dark" />
 
-        {/* Completed Page (Left/Back) */}
-        <WorkoutPage
-          headerLabel="Completed Today"
-          dayType={completedIsPush ? 'Push' : 'Pull'}
-          displayDate={formatDate(new Date())}
-          colors={completedColors}
-          warmups={completedWarmups}
-          upperExercise={completedUpper}
-          lowerExercise={completedLower}
-          abExercise={completedAbs}
-          canSkip={false}
-          onSkip={() => {}}
-          isPush={completedIsPush}
-          showDoneStamp={true}
-          style={styles.pageBack}
-          animatedStyle={{
-            transform: [
-              { translateX: completedPageTranslate },
-              { scale: completedPageScale },
-            ],
-            opacity: completedPageOpacity,
-          }}
-          footerContent={
-            <>
-              <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: completedColors.primary }]}>
-                <Text style={styles.completeBtnText}>Completed</Text>
-              </View>
-              <View style={styles.swipeIndicator}>
-                <View style={[styles.dot, { backgroundColor: completedColors.primary, transform: [{ scale: 1.2 }] }]} />
-                <View style={styles.dot} />
-              </View>
-            </>
-          }
-        />
+        {/* Older Page (swipe right reveals - comes from left) */}
+        {olderPageData && (
+          <WorkoutPage
+            headerLabel={olderPageData.headerLabel}
+            dayType={olderPageData.dayType}
+            displayDate={olderPageData.displayDate}
+            colors={olderPageData.colors}
+            warmups={olderPageData.warmups}
+            upperExercise={olderPageData.upperExercise}
+            lowerExercise={olderPageData.lowerExercise}
+            abExercise={olderPageData.abExercise}
+            canSkip={false}
+            onSkip={() => {}}
+            isPush={olderPageData.isPush}
+            showDoneStamp={olderPageData.showDoneStamp}
+            style={styles.pageBack}
+            animatedStyle={{
+              transform: [{ translateX: slideAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [-SCREEN_WIDTH, 0],
+              }) }],
+            }}
+            footerContent={
+              <>
+                <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: olderPageData.colors.primary }]}>
+                  <Text style={styles.completeBtnText}>{olderPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
+                </View>
+                <View style={styles.swipeIndicator}>
+                  {[...Array(totalDots)].map((_, i) => (
+                    <View key={i} style={[styles.dot, i === Math.max(0, activeDotIndex - 1) && { backgroundColor: olderPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                  ))}
+                </View>
+              </>
+            }
+          />
+        )}
 
-        {/* Tomorrow Page (Right/Front) */}
-        <WorkoutPage
-          headerLabel="Tomorrow's Workout"
-          dayType={tomorrowIsPush ? 'Push' : 'Pull'}
-          displayDate={formatDate(new Date(Date.now() + 86400000))}
-          colors={tomorrowColors}
-          warmups={tomorrowWarmups}
-          upperExercise={tomorrowUpper}
-          lowerExercise={tomorrowLower}
-          abExercise={tomorrowAbs}
-          canSkip={false}
-          onSkip={() => {}}
-          isPush={tomorrowIsPush}
-          showDoneStamp={false}
-          style={styles.pageFront}
-          animatedStyle={{
-            transform: [
-              { translateX: tomorrowPageTranslate },
-              { scale: tomorrowPageScale },
-            ],
-          }}
-          footerContent={
-            <>
-              <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: tomorrowColors.primary }]}>
-                <Text style={styles.completeBtnText}>Come back tomorrow</Text>
-              </View>
-              <View style={styles.swipeIndicator}>
-                <View style={styles.dot} />
-                <View style={[styles.dot, { backgroundColor: tomorrowColors.primary, transform: [{ scale: 1.2 }] }]} />
-              </View>
-            </>
-          }
-        />
+        {/* Current Page */}
+        {currentPageData && (
+          <WorkoutPage
+            headerLabel={currentPageData.headerLabel}
+            dayType={currentPageData.dayType}
+            displayDate={currentPageData.displayDate}
+            colors={currentPageData.colors}
+            warmups={currentPageData.warmups}
+            upperExercise={currentPageData.upperExercise}
+            lowerExercise={currentPageData.lowerExercise}
+            abExercise={currentPageData.abExercise}
+            canSkip={currentPageData.canSkip}
+            onSkip={skipExercise}
+            isPush={currentPageData.isPush}
+            showDoneStamp={currentPageData.showDoneStamp}
+            style={styles.pageFront}
+            animatedStyle={{
+              transform: [{ translateX: slideAnim.interpolate({
+                inputRange: [-1, 0, 1],
+                outputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
+              }) }],
+            }}
+            footerContent={
+              isViewingToday && !completedToday ? (
+                <>
+                  <TouchableOpacity
+                    style={[styles.completeBtn, { backgroundColor: currentPageData.colors.primary }]}
+                    onPress={completeDay}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.completeBtnText}>{buttonText}</Text>
+                  </TouchableOpacity>
+                  <View style={styles.swipeIndicator}>
+                    {totalDots > 0 ? (
+                      [...Array(totalDots)].map((_, i) => (
+                        <View key={i} style={[styles.dot, i === activeDotIndex && { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                      ))
+                    ) : (
+                      <View style={[styles.dot, { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                    )}
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: currentPageData.colors.primary }]}>
+                    <Text style={styles.completeBtnText}>{currentPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
+                  </View>
+                  <View style={styles.swipeIndicator}>
+                    {[...Array(totalDots)].map((_, i) => (
+                      <View key={i} style={[styles.dot, i === activeDotIndex && { backgroundColor: currentPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                    ))}
+                  </View>
+                </>
+              )
+            }
+          />
+        )}
+
+        {/* Newer Page (swipe left reveals - comes from right) */}
+        {newerPageData && (
+          <WorkoutPage
+            headerLabel={newerPageData.headerLabel}
+            dayType={newerPageData.dayType}
+            displayDate={newerPageData.displayDate}
+            colors={newerPageData.colors}
+            warmups={newerPageData.warmups}
+            upperExercise={newerPageData.upperExercise}
+            lowerExercise={newerPageData.lowerExercise}
+            abExercise={newerPageData.abExercise}
+            canSkip={false}
+            onSkip={() => {}}
+            isPush={newerPageData.isPush}
+            showDoneStamp={newerPageData.showDoneStamp}
+            style={styles.pageBack}
+            animatedStyle={{
+              transform: [{ translateX: slideAnim.interpolate({
+                inputRange: [-1, 0],
+                outputRange: [0, SCREEN_WIDTH],
+              }) }],
+            }}
+            footerContent={
+              <>
+                <View style={[styles.completeBtn, styles.completeBtnDisabled, { backgroundColor: newerPageData.colors.primary }]}>
+                  <Text style={styles.completeBtnText}>{newerPageData.showDoneStamp ? "Completed" : "Come back tomorrow"}</Text>
+                </View>
+                <View style={styles.swipeIndicator}>
+                  {[...Array(totalDots)].map((_, i) => (
+                    <View key={i} style={[styles.dot, i === Math.min(activeDotIndex + 1, totalDots - 1) && { backgroundColor: newerPageData.colors.primary, transform: [{ scale: 1.2 }] }]} />
+                  ))}
+                </View>
+              </>
+            }
+          />
+        )}
+
+        {/* Settings Overlay */}
+        {showSettings && (
+          <>
+            <Animated.View
+              style={[styles.settingsBackdrop, { opacity: settingsBackdropOpacity }]}
+            >
+              <TouchableOpacity
+                style={StyleSheet.absoluteFill}
+                onPress={closeSettings}
+                activeOpacity={1}
+              />
+            </Animated.View>
+            <Animated.View
+              style={[
+                styles.settingsOverlay,
+                { transform: [{ translateY: settingsTranslateY }] },
+              ]}
+            >
+              <View style={styles.settingsHandle} />
+              <Text style={styles.settingsTitle}>Settings</Text>
+
+              <TouchableOpacity
+                style={styles.settingsBtn}
+                onPress={seedData}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.settingsBtnText}>Seed Demo Data</Text>
+                <Text style={styles.settingsBtnSubtext}>Load sample workout history</Text>
+              </TouchableOpacity>
+
+              {__DEV__ && (
+                <TouchableOpacity
+                  style={[styles.settingsBtn, styles.settingsBtnDanger]}
+                  onPress={resetData}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.settingsBtnText, styles.settingsBtnTextDanger]}>Reset All Data</Text>
+                  <Text style={styles.settingsBtnSubtext}>Start fresh (dev only)</Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                style={styles.settingsCloseBtn}
+                onPress={closeSettings}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.settingsCloseBtnText}>Close</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </>
+        )}
       </View>
     </GestureHandlerRootView>
   );
@@ -829,5 +1283,79 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 17,
     fontWeight: '600',
+  },
+  settingsBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#000',
+    zIndex: 100,
+  },
+  settingsOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 24,
+    paddingBottom: 40,
+    zIndex: 101,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  settingsHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: COLORS.divider,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginTop: 12,
+    marginBottom: 20,
+  },
+  settingsTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: COLORS.text.primary,
+    marginBottom: 24,
+  },
+  settingsBtn: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    marginBottom: 12,
+  },
+  settingsBtnDanger: {
+    backgroundColor: '#FFF5F5',
+  },
+  settingsBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text.primary,
+  },
+  settingsBtnTextDanger: {
+    color: COLORS.push.primary,
+  },
+  settingsBtnSubtext: {
+    fontSize: 13,
+    color: COLORS.text.muted,
+    marginTop: 4,
+  },
+  settingsCloseBtn: {
+    alignItems: 'center',
+    paddingVertical: 16,
+    marginTop: 8,
+  },
+  settingsCloseBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text.muted,
   },
 });
