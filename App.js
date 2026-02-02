@@ -306,28 +306,30 @@ function WorkoutPage({
                 <Text style={styles.exerciseLabel}>UPPER</Text>
                 <Text style={styles.exerciseName}>{upperExercise}</Text>
               </View>
-              {canSkip && (
-                <TouchableOpacity
-                  style={[styles.skipBtn, { backgroundColor: colors.subtle }]}
-                  onPress={() => onSkip(isPush ? 'pushUpper' : 'pullUpper')}
-                >
-                  <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
-                </TouchableOpacity>
-              )}
+              <View style={[styles.skipBtn, { backgroundColor: canSkip ? colors.subtle : 'transparent' }]}>
+                {canSkip ? (
+                  <TouchableOpacity onPress={() => onSkip(isPush ? 'pushUpper' : 'pullUpper')}>
+                    <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={[styles.skipBtnText, { color: 'transparent' }]}>Skip</Text>
+                )}
+              </View>
             </View>
             <View style={[styles.exercise, styles.exerciseLast]}>
               <View style={styles.exerciseInfo}>
                 <Text style={styles.exerciseLabel}>LOWER</Text>
                 <Text style={styles.exerciseName}>{lowerExercise}</Text>
               </View>
-              {canSkip && (
-                <TouchableOpacity
-                  style={[styles.skipBtn, { backgroundColor: colors.subtle }]}
-                  onPress={() => onSkip(isPush ? 'pushLower' : 'pullLower')}
-                >
-                  <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
-                </TouchableOpacity>
-              )}
+              <View style={[styles.skipBtn, { backgroundColor: canSkip ? colors.subtle : 'transparent' }]}>
+                {canSkip ? (
+                  <TouchableOpacity onPress={() => onSkip(isPush ? 'pushLower' : 'pullLower')}>
+                    <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={[styles.skipBtnText, { color: 'transparent' }]}>Skip</Text>
+                )}
+              </View>
             </View>
           </View>
         </LinearGradient>
@@ -345,14 +347,15 @@ function WorkoutPage({
               <View style={styles.exerciseInfo}>
                 <Text style={styles.exerciseName}>{abExercise}</Text>
               </View>
-              {canSkip && (
-                <TouchableOpacity
-                  style={[styles.skipBtn, { backgroundColor: colors.subtle }]}
-                  onPress={() => onSkip('abs')}
-                >
-                  <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
-                </TouchableOpacity>
-              )}
+              <View style={[styles.skipBtn, { backgroundColor: canSkip ? colors.subtle : 'transparent' }]}>
+                {canSkip ? (
+                  <TouchableOpacity onPress={() => onSkip('abs')}>
+                    <Text style={[styles.skipBtnText, { color: colors.primary }]}>Skip</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={[styles.skipBtnText, { color: 'transparent' }]}>Skip</Text>
+                )}
+              </View>
             </View>
           </View>
         </LinearGradient>
