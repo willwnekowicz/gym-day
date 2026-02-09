@@ -533,8 +533,14 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState(null); // null = today, 0+ = index into completed history
   const [isLoaded, setIsLoaded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
   const slideAnim = useRef(new Animated.Value(0)).current; // 0 = current page, 1 = next page (tomorrow or newer)
   const settingsAnim = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
+  const calendarAnim = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
 
   // Track temporary skip indices for today's session (not persisted)
   const [skipIndices, setSkipIndices] = useState({
@@ -602,8 +608,8 @@ export default function App() {
   const canGoToTomorrow = isViewingToday && !!completedToday; // Can see tomorrow preview after completing today
 
   // Keep refs updated for pan responder
-  const stateRef = useRef({ historyIndex, completedToday, pastCompletedDates });
-  stateRef.current = { historyIndex, completedToday, pastCompletedDates };
+  const stateRef = useRef({ historyIndex, completedToday, pastCompletedDates, showCalendar, showSettings });
+  stateRef.current = { historyIndex, completedToday, pastCompletedDates, showCalendar, showSettings };
 
 
   const buttonText = useMemo(() => {
@@ -711,6 +717,156 @@ export default function App() {
     });
   };
 
+  // Calendar overlay functions
+  const openCalendar = () => {
+    setShowCalendar(true);
+    // Reset to current month when opening
+    const now = new Date();
+    setCalendarMonth({ year: now.getFullYear(), month: now.getMonth() });
+    Animated.timing(calendarAnim, {
+      toValue: 1,
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeCalendar = () => {
+    Animated.timing(calendarAnim, {
+      toValue: 0,
+      duration: 250,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      setShowCalendar(false);
+    });
+  };
+
+  const changeMonth = (delta) => {
+    setCalendarMonth(prev => {
+      let newMonth = prev.month + delta;
+      let newYear = prev.year;
+      if (newMonth < 0) {
+        newMonth = 11;
+        newYear--;
+      } else if (newMonth > 11) {
+        newMonth = 0;
+        newYear++;
+      }
+      return { year: newYear, month: newMonth };
+    });
+  };
+
+  // Get the expected workout type for a given date
+  const getExpectedTypeForDate = (dateKey) => {
+    // Find the most recent completion before this date to determine alternation
+    const sortedDates = Object.keys(completions).filter(d => d < dateKey).sort().reverse();
+    if (sortedDates.length === 0) {
+      // No prior completions, use currentDay as base
+      return currentDay;
+    }
+    const lastCompletion = completions[sortedDates[0]];
+    if (lastCompletion.type === 'rest') {
+      // Find the workout before rest to continue alternation
+      for (let i = 1; i < sortedDates.length; i++) {
+        if (completions[sortedDates[i]].type !== 'rest') {
+          return completions[sortedDates[i]].type === 'push' ? 'pull' : 'push';
+        }
+      }
+      return currentDay;
+    }
+    return lastCompletion.type === 'push' ? 'pull' : 'push';
+  };
+
+  // Get first app use date (earliest completion)
+  const firstAppUseDate = useMemo(() => {
+    const dates = Object.keys(completions).sort();
+    return dates.length > 0 ? dates[0] : null;
+  }, [completions]);
+
+  // Get color for a calendar day
+  const getDateColor = (dateKey) => {
+    const todayKey = getToday();
+    const tomorrowKey = getTomorrow();
+    const completion = completions[dateKey];
+
+    // Past date with completion
+    if (completion) {
+      if (completion.type === 'push') return COLORS.push.primary;
+      if (completion.type === 'pull') return COLORS.pull.primary;
+      if (completion.type === 'rest') return COLORS.rest.primary;
+    }
+
+    // Today (not completed)
+    if (dateKey === todayKey) {
+      if (todayIsRestDay) return COLORS.rest.primary;
+      return currentDay === 'push' ? COLORS.push.primary : COLORS.pull.primary;
+    }
+
+    // Tomorrow
+    if (dateKey === tomorrowKey) {
+      // Light version of expected type
+      const expectedType = completedToday ? currentDay : (currentDay === 'push' ? 'pull' : 'push');
+      // Check if tomorrow would be rest day
+      const wouldBeRestDay = isRestDay(completions, tomorrowKey);
+      if (wouldBeRestDay) return '#C8E6C9'; // Light green
+      return expectedType === 'push' ? '#FFCDD2' : '#BBDEFB'; // Light red or light blue
+    }
+
+    // Future dates (after tomorrow)
+    if (dateKey > todayKey) {
+      return '#E0E0E0'; // Light gray
+    }
+
+    // Past date without completion
+    if (firstAppUseDate && dateKey >= firstAppUseDate) {
+      // After first app use but not completed = skipped
+      return '#1A1A1A'; // Black
+    }
+
+    // Before first app use
+    return '#E0E0E0'; // Light gray
+  };
+
+  // Handle date selection in calendar
+  const handleDateSelect = (dateKey) => {
+    const todayKey = getToday();
+    closeCalendar();
+    if (dateKey === todayKey) {
+      setHistoryIndex(null);
+    } else {
+      const index = pastCompletedDates.indexOf(dateKey);
+      if (index !== -1) setHistoryIndex(index);
+    }
+  };
+
+  // Calendar pan responder for swiping between months
+  const calendarPanResponder = useMemo(() => {
+    let startX = 0;
+
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        // Only capture horizontal swipes
+        return Math.abs(gestureState.dx) > 20 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+      },
+      onPanResponderGrant: (_, gestureState) => {
+        startX = gestureState.x0;
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        const threshold = 50;
+        const velocityThreshold = 0.3;
+
+        // Swipe right = previous month, swipe left = next month
+        if (gestureState.dx > threshold || gestureState.vx > velocityThreshold) {
+          changeMonth(-1);
+        } else if (gestureState.dx < -threshold || gestureState.vx < -velocityThreshold) {
+          changeMonth(1);
+        }
+      },
+    });
+  }, []);
+
   const resetData = async () => {
     await AsyncStorage.removeItem('gymDayState');
     setState({
@@ -751,7 +907,7 @@ export default function App() {
   const combinedPanResponder = useMemo(() => {
     // Helper to get fresh state from ref
     const getState = () => {
-      const { historyIndex: hi, completedToday: ct, pastCompletedDates: pcd } = stateRef.current;
+      const { historyIndex: hi, completedToday: ct, pastCompletedDates: pcd, showCalendar: sc, showSettings: ss } = stateRef.current;
       const viewingTomorrow = hi === -1;
       const viewingToday = hi === null;
       const viewingHistory = hi !== null && hi >= 0;
@@ -759,18 +915,23 @@ export default function App() {
       const goOlder = viewingHistory && hi < pcd.length - 1;
       const goNewer = viewingHistory && hi > 0;
       const goToTomorrow = viewingToday && !!ct;
-      return { hi, viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goNewer, goToTomorrow };
+      return { hi, viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goNewer, goToTomorrow, showCalendar: sc, showSettings: ss };
     };
 
     return PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, gestureState) => {
+        const { showCalendar: sc, showSettings: ss } = getState();
+        // Block main gestures when overlays are open
+        if (sc || ss) return false;
+
         const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
         const isVerticalUp = gestureState.dy < -20 && !isHorizontal;
+        const isVerticalDown = gestureState.dy > 20 && !isHorizontal;
         const { viewingTomorrow, goToHistory, goToTomorrow } = getState();
         // Can swipe if: viewing tomorrow (can go back), have history, or can go to tomorrow
         const canSwipe = (viewingTomorrow || goToHistory || goToTomorrow) && Math.abs(gestureState.dx) > 10 && isHorizontal;
-        return isVerticalUp || canSwipe;
+        return isVerticalUp || isVerticalDown || canSwipe;
       },
       onPanResponderMove: (_, gestureState) => {
         const { viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goNewer, goToTomorrow } = getState();
@@ -799,8 +960,15 @@ export default function App() {
       onPanResponderRelease: (_, gestureState) => {
         const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
 
+        // Swipe up opens settings
         if (!isHorizontal && (gestureState.dy < -50 || gestureState.vy < -0.5)) {
           openSettings();
+          return;
+        }
+
+        // Swipe down opens calendar
+        if (!isHorizontal && (gestureState.dy > 50 || gestureState.vy > 0.5)) {
+          openCalendar();
           return;
         }
 
@@ -893,6 +1061,16 @@ export default function App() {
     outputRange: [SCREEN_HEIGHT, 0],
   });
   const settingsBackdropOpacity = settingsAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.5],
+  });
+
+  // Calendar overlay animation values
+  const calendarTranslateY = calendarAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-SCREEN_HEIGHT, 0],
+  });
+  const calendarBackdropOpacity = calendarAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0, 0.5],
   });
@@ -1448,6 +1626,162 @@ export default function App() {
             </Animated.View>
           </>
         )}
+
+        {/* Calendar Overlay */}
+        {showCalendar && (
+          <>
+            <Animated.View
+              style={[styles.calendarBackdrop, { opacity: calendarBackdropOpacity }]}
+            >
+              <TouchableOpacity
+                style={StyleSheet.absoluteFill}
+                onPress={closeCalendar}
+                activeOpacity={1}
+              />
+            </Animated.View>
+            <Animated.View
+              style={[
+                styles.calendarOverlay,
+                { transform: [{ translateY: calendarTranslateY }] },
+              ]}
+              {...calendarPanResponder.panHandlers}
+            >
+              <View style={styles.calendarHandle} />
+
+              {/* Month Header */}
+              <View style={styles.calendarHeader}>
+                <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.calendarArrow}>
+                  <Text style={styles.calendarArrowText}>{"<"}</Text>
+                </TouchableOpacity>
+                <Text style={styles.calendarMonthTitle}>
+                  {new Date(calendarMonth.year, calendarMonth.month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                </Text>
+                <TouchableOpacity onPress={() => changeMonth(1)} style={styles.calendarArrow}>
+                  <Text style={styles.calendarArrowText}>{">"}</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Day of Week Headers */}
+              <View style={styles.calendarWeekHeader}>
+                {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
+                  <Text key={i} style={styles.calendarWeekDay}>{day}</Text>
+                ))}
+              </View>
+
+              {/* Calendar Grid */}
+              <View style={styles.calendarGrid}>
+                {(() => {
+                  const firstDay = new Date(calendarMonth.year, calendarMonth.month, 1);
+                  const lastDay = new Date(calendarMonth.year, calendarMonth.month + 1, 0);
+                  const daysInMonth = lastDay.getDate();
+                  const startDayOfWeek = firstDay.getDay();
+                  const todayKey = getToday();
+
+                  const weeks = [];
+                  let currentWeek = [];
+
+                  // Padding for first week
+                  for (let i = 0; i < startDayOfWeek; i++) {
+                    currentWeek.push(null);
+                  }
+
+                  // Days of month
+                  for (let day = 1; day <= daysInMonth; day++) {
+                    const dateKey = `${calendarMonth.year}-${String(calendarMonth.month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    currentWeek.push({ day, dateKey });
+
+                    if (currentWeek.length === 7) {
+                      weeks.push(currentWeek);
+                      currentWeek = [];
+                    }
+                  }
+
+                  // Padding for last week
+                  while (currentWeek.length > 0 && currentWeek.length < 7) {
+                    currentWeek.push(null);
+                  }
+                  if (currentWeek.length > 0) {
+                    weeks.push(currentWeek);
+                  }
+
+                  return weeks.map((week, weekIndex) => (
+                    <View key={weekIndex} style={styles.calendarWeekRow}>
+                      {week.map((dayData, dayIndex) => {
+                        if (!dayData) {
+                          return <View key={dayIndex} style={styles.calendarDayCell} />;
+                        }
+
+                        const { day, dateKey } = dayData;
+                        const color = getDateColor(dateKey);
+                        const isToday = dateKey === todayKey;
+                        const hasCompletion = !!completions[dateKey];
+                        const isTappable = hasCompletion || isToday;
+                        const isFuture = dateKey > todayKey;
+                        const isBeforeFirstUse = firstAppUseDate && dateKey < firstAppUseDate;
+
+                        return (
+                          <TouchableOpacity
+                            key={dayIndex}
+                            style={styles.calendarDayCell}
+                            onPress={() => isTappable && handleDateSelect(dateKey)}
+                            disabled={!isTappable}
+                            activeOpacity={isTappable ? 0.7 : 1}
+                          >
+                            <View
+                              style={[
+                                styles.calendarDay,
+                                { backgroundColor: color },
+                                isToday && styles.calendarDayToday,
+                                (isFuture || isBeforeFirstUse) && !isToday && styles.calendarDayFuture,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.calendarDayText,
+                                  (color === '#1A1A1A' || color === COLORS.push.primary || color === COLORS.pull.primary || color === COLORS.rest.primary) && styles.calendarDayTextLight,
+                                ]}
+                              >
+                                {day}
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  ));
+                })()}
+              </View>
+
+              {/* Legend */}
+              <View style={styles.calendarLegend}>
+                <View style={styles.calendarLegendItem}>
+                  <View style={[styles.calendarLegendDot, { backgroundColor: COLORS.push.primary }]} />
+                  <Text style={styles.calendarLegendText}>Push</Text>
+                </View>
+                <View style={styles.calendarLegendItem}>
+                  <View style={[styles.calendarLegendDot, { backgroundColor: COLORS.pull.primary }]} />
+                  <Text style={styles.calendarLegendText}>Pull</Text>
+                </View>
+                <View style={styles.calendarLegendItem}>
+                  <View style={[styles.calendarLegendDot, { backgroundColor: COLORS.rest.primary }]} />
+                  <Text style={styles.calendarLegendText}>Rest</Text>
+                </View>
+                <View style={styles.calendarLegendItem}>
+                  <View style={[styles.calendarLegendDot, { backgroundColor: '#1A1A1A' }]} />
+                  <Text style={styles.calendarLegendText}>Skipped</Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={styles.calendarCloseBtn}
+                onPress={closeCalendar}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.calendarCloseBtnText}>Close</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </>
+        )}
       </View>
     </GestureHandlerRootView>
   );
@@ -1722,6 +2056,141 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   settingsCloseBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text.muted,
+  },
+  // Calendar styles
+  calendarBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#000',
+    zIndex: 100,
+  },
+  calendarOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    backgroundColor: '#fff',
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    paddingHorizontal: 16,
+    paddingTop: 50,
+    paddingBottom: 24,
+    zIndex: 101,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  calendarHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: COLORS.divider,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  calendarHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingHorizontal: 8,
+  },
+  calendarArrow: {
+    padding: 12,
+  },
+  calendarArrowText: {
+    fontSize: 24,
+    fontWeight: '300',
+    color: COLORS.text.primary,
+  },
+  calendarMonthTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: COLORS.text.primary,
+  },
+  calendarWeekHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 8,
+  },
+  calendarWeekDay: {
+    width: 40,
+    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.text.muted,
+  },
+  calendarGrid: {
+    marginBottom: 16,
+  },
+  calendarWeekRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 6,
+  },
+  calendarDayCell: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarDay: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarDayToday: {
+    borderWidth: 3,
+    borderColor: '#1A1A1A',
+  },
+  calendarDayFuture: {
+    opacity: 0.5,
+  },
+  calendarDayText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: COLORS.text.primary,
+  },
+  calendarDayTextLight: {
+    color: '#fff',
+  },
+  calendarLegend: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 16,
+    marginBottom: 16,
+    paddingHorizontal: 8,
+  },
+  calendarLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  calendarLegendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  calendarLegendText: {
+    fontSize: 12,
+    color: COLORS.text.secondary,
+  },
+  calendarCloseBtn: {
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  calendarCloseBtnText: {
     fontSize: 16,
     fontWeight: '600',
     color: COLORS.text.muted,
