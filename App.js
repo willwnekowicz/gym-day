@@ -8,11 +8,14 @@ import {
   PanResponder,
   Dimensions,
   Easing,
+  TextInput,
+  ScrollView,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -532,8 +535,11 @@ export default function App() {
   });
   const [historyIndex, setHistoryIndex] = useState(null); // null = today, 0+ = index into completed history
   const [isLoaded, setIsLoaded] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [currentScreen, setCurrentScreen] = useState('workout'); // 'workout' | 'exercises' | 'dev'
+  const [showNav, setShowNav] = useState(false); // For workout page nav visibility
+  const [newExercise, setNewExercise] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('pushUpper');
   const slideAnim = useRef(new Animated.Value(0)).current; // 0 = current page, 1 = next page (tomorrow or newer)
   const settingsAnim = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
   const calendarAnim = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
@@ -608,8 +614,8 @@ export default function App() {
   const canGoToTomorrow = isViewingToday && !!completedToday; // Can see tomorrow preview after completing today
 
   // Keep refs updated for pan responder
-  const stateRef = useRef({ historyIndex, completedToday, pastCompletedDates, showCalendar, showSettings });
-  stateRef.current = { historyIndex, completedToday, pastCompletedDates, showCalendar, showSettings };
+  const stateRef = useRef({ historyIndex, completedToday, pastCompletedDates, showCalendar, showNav, currentScreen });
+  stateRef.current = { historyIndex, completedToday, pastCompletedDates, showCalendar, showNav, currentScreen };
 
 
   const buttonText = useMemo(() => {
@@ -695,9 +701,37 @@ export default function App() {
     }));
   };
 
-  // Settings overlay functions
-  const openSettings = () => {
-    setShowSettings(true);
+  // Add a new exercise to a queue
+  const addExercise = (queueKey, exerciseName) => {
+    if (!exerciseName.trim()) return;
+    setState(prev => ({
+      ...prev,
+      queues: {
+        ...prev.queues,
+        [queueKey]: [...prev.queues[queueKey], exerciseName.trim()]
+      }
+    }));
+  };
+
+  // Remove an exercise from a queue (minimum 1 exercise required)
+  const removeExercise = (queueKey, index) => {
+    setState(prev => {
+      if (prev.queues[queueKey].length <= 1) return prev; // Keep at least 1 exercise
+      const newQueue = [...prev.queues[queueKey]];
+      newQueue.splice(index, 1);
+      return {
+        ...prev,
+        queues: {
+          ...prev.queues,
+          [queueKey]: newQueue
+        }
+      };
+    });
+  };
+
+  // Nav overlay functions (for workout page)
+  const openNav = () => {
+    setShowNav(true);
     Animated.timing(settingsAnim, {
       toValue: 1,
       duration: 300,
@@ -706,14 +740,14 @@ export default function App() {
     }).start();
   };
 
-  const closeSettings = () => {
+  const closeNav = () => {
     Animated.timing(settingsAnim, {
       toValue: 0,
       duration: 250,
       easing: Easing.in(Easing.cubic),
       useNativeDriver: true,
     }).start(() => {
-      setShowSettings(false);
+      setShowNav(false);
     });
   };
 
@@ -882,14 +916,12 @@ export default function App() {
       abs: 0,
     });
     setHistoryIndex(null);
-    closeSettings();
   };
 
   const seedData = () => {
     const seeded = generateSeedData(INITIAL_QUEUES, 'push');
     setState(seeded);
     setHistoryIndex(null); // Stay on today view
-    closeSettings();
   };
 
   // Track pending navigation to prevent flash (use object to distinguish from null historyIndex)
@@ -907,7 +939,7 @@ export default function App() {
   const combinedPanResponder = useMemo(() => {
     // Helper to get fresh state from ref
     const getState = () => {
-      const { historyIndex: hi, completedToday: ct, pastCompletedDates: pcd, showCalendar: sc, showSettings: ss } = stateRef.current;
+      const { historyIndex: hi, completedToday: ct, pastCompletedDates: pcd, showCalendar: sc, showSettings: ss, currentScreen: cs } = stateRef.current;
       const viewingTomorrow = hi === -1;
       const viewingToday = hi === null;
       const viewingHistory = hi !== null && hi >= 0;
@@ -915,19 +947,29 @@ export default function App() {
       const goOlder = viewingHistory && hi < pcd.length - 1;
       const goNewer = viewingHistory && hi > 0;
       const goToTomorrow = viewingToday && !!ct;
-      return { hi, viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goNewer, goToTomorrow, showCalendar: sc, showSettings: ss };
+      return { hi, viewingTomorrow, viewingToday, viewingHistory, goToHistory, goOlder, goNewer, goToTomorrow, showCalendar: sc, showSettings: ss, currentScreen: cs };
     };
 
     return PanResponder.create({
       onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        const { showCalendar: sc, showSettings: ss } = getState();
-        // Block main gestures when overlays are open
-        if (sc || ss) return false;
+      onMoveShouldSetPanResponder: (evt, gestureState) => {
+        const { showCalendar: sc, showNav: sn, currentScreen: cs } = getState();
+        // Block gestures when calendar is open
+        if (sc) return false;
+
+        // When nav is open, only allow vertical swipe down to close it
+        if (sn) {
+          const isVerticalDown = gestureState.dy > 20 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
+          return isVerticalDown;
+        }
+
+        // No gestures on exercises screen
+        if (cs === 'exercises') return false;
 
         const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
         const isVerticalUp = gestureState.dy < -20 && !isHorizontal;
         const isVerticalDown = gestureState.dy > 20 && !isHorizontal;
+
         const { viewingTomorrow, goToHistory, goToTomorrow } = getState();
         // Can swipe if: viewing tomorrow (can go back), have history, or can go to tomorrow
         const canSwipe = (viewingTomorrow || goToHistory || goToTomorrow) && Math.abs(gestureState.dx) > 10 && isHorizontal;
@@ -960,15 +1002,20 @@ export default function App() {
       onPanResponderRelease: (_, gestureState) => {
         const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
 
-        // Swipe up opens settings
+        // Swipe up opens nav (workout page only)
         if (!isHorizontal && (gestureState.dy < -50 || gestureState.vy < -0.5)) {
-          openSettings();
+          openNav();
           return;
         }
 
-        // Swipe down opens calendar
+        // Swipe down: close nav if open, otherwise open calendar
         if (!isHorizontal && (gestureState.dy > 50 || gestureState.vy > 0.5)) {
-          openCalendar();
+          const { showNav: sn } = getState();
+          if (sn) {
+            closeNav();
+          } else {
+            openCalendar();
+          }
           return;
         }
 
@@ -1058,7 +1105,7 @@ export default function App() {
   // Settings overlay animation values
   const settingsTranslateY = settingsAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [SCREEN_HEIGHT, 0],
+    outputRange: [300, 0],
   });
   const settingsBackdropOpacity = settingsAnim.interpolate({
     inputRange: [0, 1],
@@ -1337,7 +1384,7 @@ export default function App() {
         <StatusBar style="dark" />
 
         {/* Older Page (swipe right reveals - comes from left) */}
-        {olderPageData && (
+        {currentScreen === 'workout' && olderPageData && (
           olderPageData.isRestDay ? (
             <RestDayPage
               headerLabel={olderPageData.headerLabel}
@@ -1402,7 +1449,7 @@ export default function App() {
         )}
 
         {/* Current Page */}
-        {currentPageData && (
+        {currentScreen === 'workout' && currentPageData && (
           currentPageData.isRestDay ? (
             <RestDayPage
               headerLabel={currentPageData.headerLabel}
@@ -1509,7 +1556,7 @@ export default function App() {
         )}
 
         {/* Newer Page (swipe left reveals - comes from right) */}
-        {newerPageData && (
+        {currentScreen === 'workout' && newerPageData && (
           newerPageData.isRestDay ? (
             <RestDayPage
               headerLabel={newerPageData.headerLabel}
@@ -1573,56 +1620,102 @@ export default function App() {
           )
         )}
 
-        {/* Settings Overlay */}
-        {showSettings && (
+        {/* Bottom Navigation Bar */}
+        {/* On workout page: slides up on swipe, on other pages: always visible */}
+        {(currentScreen !== 'workout' || showNav) && (
           <>
-            <Animated.View
-              style={[styles.settingsBackdrop, { opacity: settingsBackdropOpacity }]}
-            >
-              <TouchableOpacity
-                style={StyleSheet.absoluteFill}
-                onPress={closeSettings}
-                activeOpacity={1}
-              />
-            </Animated.View>
-            <Animated.View
-              style={[
-                styles.settingsOverlay,
-                { transform: [{ translateY: settingsTranslateY }] },
-              ]}
-            >
-              <View style={styles.settingsHandle} />
-              <Text style={styles.settingsTitle}>Settings</Text>
-
-              {__DEV__ && (
-                <TouchableOpacity
-                  style={styles.settingsBtn}
-                  onPress={seedData}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.settingsBtnText}>Seed Demo Data</Text>
-                  <Text style={styles.settingsBtnSubtext}>Load ~month of history + 6-day streak</Text>
-                </TouchableOpacity>
-              )}
-
-              {__DEV__ && (
-                <TouchableOpacity
-                  style={[styles.settingsBtn, styles.settingsBtnDanger]}
-                  onPress={resetData}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[styles.settingsBtnText, styles.settingsBtnTextDanger]}>Reset All Data</Text>
-                  <Text style={styles.settingsBtnSubtext}>Start fresh (dev only)</Text>
-                </TouchableOpacity>
-              )}
-
-              <TouchableOpacity
-                style={styles.settingsCloseBtn}
-                onPress={closeSettings}
-                activeOpacity={0.7}
+            {/* Backdrop only on workout page when nav is open */}
+            {currentScreen === 'workout' && showNav && (
+              <Animated.View
+                style={[styles.navBackdrop, { opacity: settingsBackdropOpacity }]}
               >
-                <Text style={styles.settingsCloseBtnText}>Close</Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={StyleSheet.absoluteFill}
+                  onPress={closeNav}
+                  activeOpacity={1}
+                />
+              </Animated.View>
+            )}
+            <Animated.View style={[
+              styles.bottomNav,
+              currentScreen === 'workout' && styles.bottomNavSlide,
+              currentScreen === 'workout' && { transform: [{ translateY: settingsTranslateY }] }
+            ]}>
+              {currentScreen === 'workout' && <View style={styles.navHandle} />}
+
+              <View style={styles.navIconsRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.bottomNavBtn,
+                    currentScreen === 'workout' && styles.bottomNavBtnActive
+                  ]}
+                  onPress={() => { setCurrentScreen('workout'); if (showNav) closeNav(); }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name={currentScreen === 'workout' ? 'barbell' : 'barbell-outline'}
+                    size={24}
+                    color={currentScreen === 'workout' ? COLORS.text.primary : COLORS.text.muted}
+                  />
+                  <Text style={[
+                    styles.bottomNavLabel,
+                    currentScreen === 'workout' && styles.bottomNavLabelActive
+                  ]}>Workout</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.bottomNavBtn,
+                    currentScreen === 'exercises' && styles.bottomNavBtnActive
+                  ]}
+                  onPress={() => { setCurrentScreen('exercises'); if (showNav) closeNav(); }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name={currentScreen === 'exercises' ? 'list' : 'list-outline'}
+                    size={24}
+                    color={currentScreen === 'exercises' ? COLORS.text.primary : COLORS.text.muted}
+                  />
+                  <Text style={[
+                    styles.bottomNavLabel,
+                    currentScreen === 'exercises' && styles.bottomNavLabelActive
+                  ]}>Exercises</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.bottomNavBtn}
+                  onPress={() => { openCalendar(); if (showNav) closeNav(); }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={24}
+                    color={COLORS.text.muted}
+                  />
+                  <Text style={styles.bottomNavLabel}>Calendar</Text>
+                </TouchableOpacity>
+
+                {__DEV__ && (
+                  <TouchableOpacity
+                    style={[
+                      styles.bottomNavBtn,
+                      currentScreen === 'dev' && styles.bottomNavBtnActive
+                    ]}
+                    onPress={() => { setCurrentScreen('dev'); if (showNav) closeNav(); }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={currentScreen === 'dev' ? 'construct' : 'construct-outline'}
+                      size={24}
+                      color={currentScreen === 'dev' ? COLORS.text.primary : COLORS.text.muted}
+                    />
+                    <Text style={[
+                      styles.bottomNavLabel,
+                      currentScreen === 'dev' && styles.bottomNavLabelActive
+                    ]}>Dev</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </Animated.View>
           </>
         )}
@@ -1781,6 +1874,139 @@ export default function App() {
               </TouchableOpacity>
             </Animated.View>
           </>
+        )}
+
+        {/* Exercise Management Screen */}
+        {currentScreen === 'exercises' && (
+          <View style={styles.exerciseManagementScreen}>
+            <View style={styles.exerciseManagementHeader}>
+              <Text style={styles.exerciseManagementTitle}>Manage Exercises</Text>
+              <Text style={styles.exerciseManagementSubtitle}>Add or remove exercises from your rotation</Text>
+            </View>
+
+            {/* Category Tabs */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.categoryTabsContainer}
+              contentContainerStyle={styles.categoryTabs}
+            >
+              {[
+                { key: 'pushUpper', label: 'Push Upper', color: COLORS.push.primary },
+                { key: 'pushLower', label: 'Push Lower', color: COLORS.push.primary },
+                { key: 'pullUpper', label: 'Pull Upper', color: COLORS.pull.primary },
+                { key: 'pullLower', label: 'Pull Lower', color: COLORS.pull.primary },
+                { key: 'abs', label: 'Abs', color: COLORS.text.primary },
+              ].map(({ key, label, color }) => (
+                <TouchableOpacity
+                  key={key}
+                  style={[
+                    styles.categoryTab,
+                    selectedCategory === key && { backgroundColor: color }
+                  ]}
+                  onPress={() => setSelectedCategory(key)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[
+                    styles.categoryTabText,
+                    selectedCategory === key && styles.categoryTabTextActive
+                  ]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Add Exercise Input */}
+            <View style={styles.addExerciseContainer}>
+              <TextInput
+                style={styles.addExerciseInput}
+                placeholder="Add new exercise..."
+                placeholderTextColor={COLORS.text.muted}
+                value={newExercise}
+                onChangeText={setNewExercise}
+                onSubmitEditing={() => {
+                  addExercise(selectedCategory, newExercise);
+                  setNewExercise('');
+                }}
+                returnKeyType="done"
+              />
+              <TouchableOpacity
+                style={[
+                  styles.addExerciseBtn,
+                  { backgroundColor: selectedCategory.startsWith('push') ? COLORS.push.primary :
+                                     selectedCategory.startsWith('pull') ? COLORS.pull.primary :
+                                     COLORS.text.primary }
+                ]}
+                onPress={() => {
+                  addExercise(selectedCategory, newExercise);
+                  setNewExercise('');
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.addExerciseBtnText}>+</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Exercise List */}
+            <ScrollView style={styles.exerciseListContainer} showsVerticalScrollIndicator={false}>
+              {queues[selectedCategory].map((exercise, index) => (
+                <View key={`${selectedCategory}-${index}`} style={styles.exerciseListItem}>
+                  <View style={styles.exerciseListItemInfo}>
+                    <Text style={styles.exerciseListItemNumber}>{index + 1}</Text>
+                    <Text style={styles.exerciseListItemName}>{exercise}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.removeExerciseBtn}
+                    onPress={() => removeExercise(selectedCategory, index)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.removeExerciseBtnText}>×</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {queues[selectedCategory].length === 0 && (
+                <Text style={styles.emptyListText}>No exercises yet. Add one above!</Text>
+              )}
+              <View style={styles.exerciseListSpacer} />
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Dev Screen */}
+        {__DEV__ && currentScreen === 'dev' && (
+          <View style={styles.devScreen}>
+            <View style={styles.devHeader}>
+              <Text style={styles.devTitle}>Developer Tools</Text>
+              <Text style={styles.devSubtitle}>Testing and debugging options</Text>
+            </View>
+
+            <View style={styles.devContent}>
+              <TouchableOpacity
+                style={styles.devBtn}
+                onPress={seedData}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="flask-outline" size={24} color={COLORS.text.primary} />
+                <View style={styles.devBtnText}>
+                  <Text style={styles.devBtnTitle}>Seed Demo Data</Text>
+                  <Text style={styles.devBtnSubtitle}>Load ~month of history + 6-day streak</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.devBtn, styles.devBtnDanger]}
+                onPress={resetData}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="trash-outline" size={24} color={COLORS.push.primary} />
+                <View style={styles.devBtnText}>
+                  <Text style={[styles.devBtnTitle, styles.devBtnTitleDanger]}>Reset All Data</Text>
+                  <Text style={styles.devBtnSubtitle}>Clear all workouts and start fresh</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.devSpacer} />
+          </View>
         )}
       </View>
     </GestureHandlerRootView>
@@ -1986,79 +2212,28 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
   },
-  settingsBackdrop: {
+  // Nav backdrop (for workout page slide-up)
+  navBackdrop: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
     backgroundColor: '#000',
-    zIndex: 100,
+    zIndex: 90,
   },
-  settingsOverlay: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 24,
-    paddingBottom: 40,
-    zIndex: 101,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    elevation: 20,
-  },
-  settingsHandle: {
+  navHandle: {
     width: 40,
     height: 4,
     backgroundColor: COLORS.divider,
     borderRadius: 2,
     alignSelf: 'center',
-    marginTop: 12,
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  settingsTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: COLORS.text.primary,
-    marginBottom: 24,
-  },
-  settingsBtn: {
-    backgroundColor: '#F5F5F5',
-    borderRadius: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    marginBottom: 12,
-  },
-  settingsBtnDanger: {
-    backgroundColor: '#FFF5F5',
-  },
-  settingsBtnText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text.primary,
-  },
-  settingsBtnTextDanger: {
-    color: COLORS.push.primary,
-  },
-  settingsBtnSubtext: {
-    fontSize: 13,
-    color: COLORS.text.muted,
-    marginTop: 4,
-  },
-  settingsCloseBtn: {
-    alignItems: 'center',
-    paddingVertical: 16,
-    marginTop: 8,
-  },
-  settingsCloseBtnText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text.muted,
+  navIconsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
   },
   // Calendar styles
   calendarBackdrop: {
@@ -2194,5 +2369,236 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: COLORS.text.muted,
+  },
+  // Bottom Navigation Bar styles
+  bottomNav: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#fff',
+    paddingBottom: 34,
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.divider,
+    zIndex: 95,
+  },
+  bottomNavSlide: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  bottomNavBtn: {
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 4,
+  },
+  bottomNavBtnActive: {
+    backgroundColor: '#F0F0F0',
+  },
+  bottomNavLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: COLORS.text.muted,
+  },
+  bottomNavLabelActive: {
+    color: COLORS.text.primary,
+    fontWeight: '600',
+  },
+  // Exercise Management Screen styles
+  exerciseManagementScreen: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#fff',
+    zIndex: 50,
+  },
+  exerciseManagementHeader: {
+    paddingTop: 80,
+    paddingHorizontal: 24,
+    paddingBottom: 16,
+  },
+  exerciseManagementTitle: {
+    fontSize: 32,
+    fontWeight: '400',
+    color: COLORS.text.primary,
+    fontFamily: 'Georgia',
+  },
+  exerciseManagementSubtitle: {
+    fontSize: 15,
+    color: COLORS.text.muted,
+    marginTop: 6,
+  },
+  categoryTabsContainer: {
+    flexGrow: 0,
+  },
+  categoryTabs: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  categoryTab: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 10,
+    backgroundColor: '#F0F0F0',
+  },
+  categoryTabText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.text.secondary,
+  },
+  categoryTabTextActive: {
+    color: '#fff',
+  },
+  addExerciseContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    gap: 12,
+  },
+  addExerciseInput: {
+    flex: 1,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: COLORS.text.primary,
+  },
+  addExerciseBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addExerciseBtnText: {
+    fontSize: 28,
+    fontWeight: '400',
+    color: '#fff',
+  },
+  exerciseListContainer: {
+    flex: 1,
+    paddingHorizontal: 24,
+  },
+  exerciseListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.divider,
+  },
+  exerciseListItemInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  exerciseListItemNumber: {
+    width: 28,
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text.muted,
+  },
+  exerciseListItemName: {
+    fontSize: 16,
+    color: COLORS.text.primary,
+    flex: 1,
+  },
+  removeExerciseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFF5F5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 12,
+  },
+  removeExerciseBtnText: {
+    fontSize: 24,
+    fontWeight: '300',
+    color: COLORS.push.primary,
+    marginTop: -2,
+  },
+  emptyListText: {
+    textAlign: 'center',
+    color: COLORS.text.muted,
+    fontSize: 15,
+    paddingVertical: 40,
+  },
+  exerciseListSpacer: {
+    height: 120,
+  },
+  // Dev Screen styles
+  devScreen: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#fff',
+    zIndex: 50,
+  },
+  devHeader: {
+    paddingTop: 80,
+    paddingHorizontal: 24,
+    paddingBottom: 24,
+  },
+  devTitle: {
+    fontSize: 32,
+    fontWeight: '400',
+    color: COLORS.text.primary,
+    fontFamily: 'Georgia',
+  },
+  devSubtitle: {
+    fontSize: 15,
+    color: COLORS.text.muted,
+    marginTop: 6,
+  },
+  devContent: {
+    paddingHorizontal: 24,
+    gap: 12,
+  },
+  devBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 16,
+    padding: 20,
+    gap: 16,
+  },
+  devBtnDanger: {
+    backgroundColor: '#FFF5F5',
+  },
+  devBtnText: {
+    flex: 1,
+  },
+  devBtnTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: COLORS.text.primary,
+  },
+  devBtnTitleDanger: {
+    color: COLORS.push.primary,
+  },
+  devBtnSubtitle: {
+    fontSize: 13,
+    color: COLORS.text.muted,
+    marginTop: 4,
+  },
+  devSpacer: {
+    height: 120,
   },
 });
