@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,6 +10,7 @@ import {
   Easing,
   TextInput,
   ScrollView,
+  Vibration,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -70,6 +71,9 @@ const REST_DAY_QUOTES = [
   "You've earned this",
   "Let your body rebuild",
 ];
+
+// Rest timer duration options in seconds
+const REST_TIMER_OPTIONS = [30, 60, 90, 120];
 
 const INITIAL_QUEUES = {
   pushUpper: [
@@ -134,6 +138,7 @@ const WARMUPS = {
     lower: "Hip Thrusts (against bench)"
   }
 };
+
 
 const COLORS = {
   push: {
@@ -348,6 +353,7 @@ function WorkoutPage({
   style,
   animatedStyle,
   footerContent,
+  notes,
 }) {
   return (
     <Animated.View style={[styles.page, { backgroundColor: colors.bg }, style, animatedStyle]}>
@@ -450,6 +456,21 @@ function WorkoutPage({
             </View>
           </View>
         </LinearGradient>
+
+        {/* Notes - only show if notes exist */}
+        {notes && notes.trim() !== '' && (
+          <LinearGradient
+            colors={[colors.sectionGradient, 'transparent']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={styles.section}
+          >
+            <Text style={[styles.sectionTitle, { color: colors.primary }]}>NOTES</Text>
+            <View style={styles.notesContainer}>
+              <Text style={styles.notesText}>{notes}</Text>
+            </View>
+          </LinearGradient>
+        )}
       </View>
 
       {/* Footer */}
@@ -540,6 +561,7 @@ export default function App() {
   const [showNav, setShowNav] = useState(false); // For workout page nav visibility
   const [newExercise, setNewExercise] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('pushUpper');
+  const [showRestTimer, setShowRestTimer] = useState(false); // For rest timer visibility
   const slideAnim = useRef(new Animated.Value(0)).current; // 0 = current page, 1 = next page (tomorrow or newer)
   const settingsAnim = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
   const calendarAnim = useRef(new Animated.Value(0)).current; // 0 = hidden, 1 = visible
@@ -556,6 +578,11 @@ export default function App() {
     pullLower: 0,
     abs: 0,
   });
+
+  // Notes modal state
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [workoutNotes, setWorkoutNotes] = useState('');
+  const notesModalAnim = useRef(new Animated.Value(0)).current;
 
   // Load state from AsyncStorage
   useEffect(() => {
@@ -638,7 +665,33 @@ export default function App() {
     }));
   };
 
-  const completeDay = () => {
+  // Open notes modal when completing a workout
+  const openNotesModal = () => {
+    setShowNotesModal(true);
+    setWorkoutNotes('');
+    Animated.timing(notesModalAnim, {
+      toValue: 1,
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  // Close notes modal
+  const closeNotesModal = () => {
+    Animated.timing(notesModalAnim, {
+      toValue: 0,
+      duration: 250,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      setShowNotesModal(false);
+      setWorkoutNotes('');
+    });
+  };
+
+  // Complete the workout with optional notes
+  const completeDay = (notes = '') => {
     setState(prev => {
       const upperKey = prev.currentDay === 'push' ? 'pushUpper' : 'pullUpper';
       const lowerKey = prev.currentDay === 'push' ? 'pushLower' : 'pullLower';
@@ -652,7 +705,8 @@ export default function App() {
         type: prev.currentDay,
         upperExercise: prev.queues[upperKey][upperIndex],
         lowerExercise: prev.queues[lowerKey][lowerIndex],
-        abExercise: prev.queues.abs[absIndex]
+        abExercise: prev.queues.abs[absIndex],
+        notes: notes.trim() || undefined, // Only store notes if not empty
       };
 
       const newQueues = { ...prev.queues };
@@ -688,6 +742,26 @@ export default function App() {
       pullLower: 0,
       abs: 0,
     });
+
+    // Close the modal if it was open
+    if (showNotesModal) {
+      closeNotesModal();
+    }
+  };
+
+  // Handler for the complete button - opens notes modal
+  const handleCompletePress = () => {
+    openNotesModal();
+  };
+
+  // Handler for confirming workout with notes
+  const confirmWorkoutWithNotes = () => {
+    completeDay(workoutNotes);
+  };
+
+  // Handler for skipping notes (complete without notes)
+  const skipNotesAndComplete = () => {
+    completeDay('');
   };
 
   // Complete rest day - just mark it as done without rotating queues or changing day type
@@ -1168,6 +1242,7 @@ export default function App() {
       abExercise: completion.abExercise,
       showDoneStamp: true,
       isPush,
+      notes: completion.notes,
     };
   };
 
@@ -1223,6 +1298,7 @@ export default function App() {
           showDoneStamp: true,
           isPush,
           canSkip: false,
+          notes: completedToday.notes,
         };
       }
       // Today is a rest day (not yet completed)
@@ -1281,6 +1357,7 @@ export default function App() {
           abExercise: completedToday.abExercise,
           showDoneStamp: true,
           isPush,
+          notes: completedToday.notes,
         };
       }
       return null;
@@ -1322,6 +1399,7 @@ export default function App() {
             abExercise: completedToday.abExercise,
             showDoneStamp: true,
             isPush,
+            notes: completedToday.notes,
           };
         }
         // Today is rest day (not completed)
@@ -1425,6 +1503,7 @@ export default function App() {
               onSkip={() => {}}
               isPush={olderPageData.isPush}
               showDoneStamp={olderPageData.showDoneStamp}
+              notes={olderPageData.notes}
               style={styles.pageBack}
               animatedStyle={{
                 transform: [{ translateX: slideAnim.interpolate({
@@ -1518,12 +1597,13 @@ export default function App() {
                   outputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
                 }) }],
               }}
+              notes={currentPageData.notes}
               footerContent={
                 isViewingToday && !completedToday ? (
                   <>
                     <TouchableOpacity
                       style={[styles.completeBtn, { backgroundColor: currentPageData.colors.primary }]}
-                      onPress={completeDay}
+                      onPress={handleCompletePress}
                       activeOpacity={0.8}
                     >
                       <Text style={styles.completeBtnText}>{buttonText}</Text>
@@ -1597,6 +1677,7 @@ export default function App() {
               onSkip={() => {}}
               isPush={newerPageData.isPush}
               showDoneStamp={newerPageData.showDoneStamp}
+              notes={newerPageData.notes}
               style={styles.pageBack}
               animatedStyle={{
                 transform: [{ translateX: slideAnim.interpolate({
@@ -1694,6 +1775,7 @@ export default function App() {
                   />
                   <Text style={styles.bottomNavLabel}>Calendar</Text>
                 </TouchableOpacity>
+
 
                 {__DEV__ && (
                   <TouchableOpacity
@@ -1971,6 +2053,7 @@ export default function App() {
           </View>
         )}
 
+
         {/* Dev Screen */}
         {__DEV__ && currentScreen === 'dev' && (
           <View style={styles.devScreen}>
@@ -2007,6 +2090,90 @@ export default function App() {
 
             <View style={styles.devSpacer} />
           </View>
+        )}
+
+        {/* Notes Modal */}
+        {showNotesModal && (
+          <Modal
+            transparent
+            visible={showNotesModal}
+            animationType="none"
+            onRequestClose={closeNotesModal}
+          >
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              style={styles.notesModalContainer}
+            >
+              <Animated.View
+                style={[
+                  styles.notesModalBackdrop,
+                  {
+                    opacity: notesModalAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, 0.5],
+                    }),
+                  },
+                ]}
+              >
+                <TouchableOpacity
+                  style={StyleSheet.absoluteFill}
+                  onPress={skipNotesAndComplete}
+                  activeOpacity={1}
+                />
+              </Animated.View>
+              <Animated.View
+                style={[
+                  styles.notesModalContent,
+                  {
+                    transform: [
+                      {
+                        translateY: notesModalAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [300, 0],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              >
+                <View style={styles.notesModalHandle} />
+                <Text style={styles.notesModalTitle}>Add workout notes?</Text>
+                <Text style={styles.notesModalSubtitle}>Record how you felt, weights used, or any other details</Text>
+                <TextInput
+                  style={styles.notesModalInput}
+                  placeholder="e.g., Increased bench to 185lbs, felt strong today..."
+                  placeholderTextColor={COLORS.text.muted}
+                  value={workoutNotes}
+                  onChangeText={setWorkoutNotes}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                  autoFocus
+                />
+                <View style={styles.notesModalButtons}>
+                  <TouchableOpacity
+                    style={styles.notesModalSkipBtn}
+                    onPress={skipNotesAndComplete}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.notesModalSkipBtnText}>Skip</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.notesModalSaveBtn,
+                      { backgroundColor: todayIsPush ? COLORS.push.primary : COLORS.pull.primary },
+                    ]}
+                    onPress={confirmWorkoutWithNotes}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.notesModalSaveBtnText}>
+                      {workoutNotes.trim() ? 'Save & Complete' : 'Complete'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </Animated.View>
+            </KeyboardAvoidingView>
+          </Modal>
         )}
       </View>
     </GestureHandlerRootView>
@@ -2600,5 +2767,104 @@ const styles = StyleSheet.create({
   },
   devSpacer: {
     height: 120,
+  },
+  // Notes styles
+  notesContainer: {
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.divider,
+  },
+  notesText: {
+    fontSize: 15,
+    color: COLORS.text.secondary,
+    lineHeight: 22,
+    fontStyle: 'italic',
+  },
+  // Notes Modal styles
+  notesModalContainer: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  notesModalBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#000',
+  },
+  notesModalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 40,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  notesModalHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: COLORS.divider,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 20,
+  },
+  notesModalTitle: {
+    fontSize: 22,
+    fontWeight: '600',
+    color: COLORS.text.primary,
+    marginBottom: 8,
+  },
+  notesModalSubtitle: {
+    fontSize: 14,
+    color: COLORS.text.muted,
+    marginBottom: 20,
+  },
+  notesModalInput: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: COLORS.text.primary,
+    minHeight: 100,
+    marginBottom: 20,
+  },
+  notesModalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  notesModalSkipBtn: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: '#F0F0F0',
+  },
+  notesModalSkipBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text.secondary,
+  },
+  notesModalSaveBtn: {
+    flex: 2,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  notesModalSaveBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
   },
 });
