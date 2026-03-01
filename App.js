@@ -220,8 +220,14 @@ function getConsecutiveWorkouts(completions) {
 
   let count = 0;
   for (const dateKey of sortedDates) {
-    // Check if this completion is a rest day (skip it)
-    if (completions[dateKey].type === 'rest') continue;
+    if (completions[dateKey].type === 'rest') break;
+    // Check that this date is the expected consecutive day
+    if (count > 0) {
+      const expected = new Date(sortedDates[0]);
+      expected.setDate(expected.getDate() - count);
+      const expectedKey = expected.toISOString().split('T')[0];
+      if (dateKey !== expectedKey) break;
+    }
     count++;
   }
   return count;
@@ -229,18 +235,22 @@ function getConsecutiveWorkouts(completions) {
 
 // Check if a specific date should be a rest day based on completions before it
 function isRestDay(completions, dateKey) {
-  const sortedDates = Object.keys(completions).filter(d => d < dateKey).sort().reverse();
+  // Walk backwards from the day before dateKey, checking each consecutive calendar day
   let consecutiveCount = 0;
+  const target = new Date(dateKey + 'T00:00:00');
 
-  for (const date of sortedDates) {
-    if (completions[date].type === 'rest') {
-      // A rest day resets the counter
-      break;
+  for (let i = 1; i <= 6; i++) {
+    const prev = new Date(target);
+    prev.setDate(target.getDate() - i);
+    const prevKey = prev.toISOString().split('T')[0];
+
+    if (!completions[prevKey] || completions[prevKey].type === 'rest') {
+      // Gap in calendar or a rest day breaks the streak
+      return false;
     }
     consecutiveCount++;
-    if (consecutiveCount >= 6) return true;
   }
-  return false;
+  return consecutiveCount >= 6;
 }
 
 // Check if today should be a rest day (6 consecutive workouts completed before today)
