@@ -11,12 +11,16 @@ import {
   TextInput,
   ScrollView,
   Vibration,
+  Modal,
+  Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -179,6 +183,10 @@ const COLORS = {
 function getToday() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function dateToKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function getYesterday() {
@@ -364,6 +372,7 @@ function WorkoutPage({
   animatedStyle,
   footerContent,
   notes,
+  onDatePress,
 }) {
   return (
     <Animated.View style={[styles.page, { backgroundColor: colors.bg }, style, animatedStyle]}>
@@ -373,7 +382,13 @@ function WorkoutPage({
           {headerLabel}
         </Text>
         <Text style={styles.title}>{dayType} Day</Text>
-        <Text style={styles.date}>{displayDate}</Text>
+        {onDatePress ? (
+          <TouchableOpacity onPress={onDatePress} activeOpacity={0.6}>
+            <Text style={[styles.date, styles.dateTappable, { color: colors.primary }]}>{displayDate}</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.date}>{displayDate}</Text>
+        )}
       </View>
 
       {/* Content */}
@@ -511,6 +526,7 @@ function RestDayPage({
   style,
   animatedStyle,
   footerContent,
+  onDatePress,
 }) {
   const colors = COLORS.rest;
 
@@ -522,7 +538,13 @@ function RestDayPage({
           {headerLabel}
         </Text>
         <Text style={styles.title}>Rest Day</Text>
-        <Text style={styles.date}>{displayDate}</Text>
+        {onDatePress ? (
+          <TouchableOpacity onPress={onDatePress} activeOpacity={0.6}>
+            <Text style={[styles.date, styles.dateTappable, { color: colors.primary }]}>{displayDate}</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.date}>{displayDate}</Text>
+        )}
       </View>
 
       {/* Content */}
@@ -593,6 +615,10 @@ export default function App() {
   const [showNotesModal, setShowNotesModal] = useState(false);
   const [workoutNotes, setWorkoutNotes] = useState('');
   const notesModalAnim = useRef(new Animated.Value(0)).current;
+
+  // Date override for logging workouts on a different day
+  const [selectedDate, setSelectedDate] = useState(null); // null = today, Date object = override
+  const [showDatePicker, setShowDatePicker] = useState(false);
 
   // Load state from AsyncStorage
   useEffect(() => {
@@ -702,6 +728,7 @@ export default function App() {
 
   // Complete the workout with optional notes
   const completeDay = (notes = '') => {
+    const completionDateKey = selectedDate ? dateToKey(selectedDate) : today;
     setState(prev => {
       const upperKey = prev.currentDay === 'push' ? 'pushUpper' : 'pullUpper';
       const lowerKey = prev.currentDay === 'push' ? 'pushLower' : 'pullLower';
@@ -739,12 +766,12 @@ export default function App() {
         currentDay: prev.currentDay === 'push' ? 'pull' : 'push',
         completions: {
           ...prev.completions,
-          [today]: completedWorkout
+          [completionDateKey]: completedWorkout
         }
       };
     });
 
-    // Reset skip indices for next session
+    // Reset skip indices and date override for next session
     setSkipIndices({
       pushUpper: 0,
       pushLower: 0,
@@ -752,6 +779,7 @@ export default function App() {
       pullLower: 0,
       abs: 0,
     });
+    setSelectedDate(null);
 
     // Close the modal if it was open
     if (showNotesModal) {
@@ -776,13 +804,15 @@ export default function App() {
 
   // Complete rest day - just mark it as done without rotating queues or changing day type
   const completeRestDay = () => {
+    const completionDateKey = selectedDate ? dateToKey(selectedDate) : today;
     setState(prev => ({
       ...prev,
       completions: {
         ...prev.completions,
-        [today]: { type: 'rest' }
+        [completionDateKey]: { type: 'rest' }
       }
     }));
+    setSelectedDate(null);
   };
 
   // Add a new exercise to a queue
@@ -1313,19 +1343,22 @@ export default function App() {
       }
       // Today is a rest day (not yet completed)
       if (todayIsRestDay) {
+        const displayDateObj = selectedDate || new Date();
         return {
           isRestDay: true,
-          headerLabel: "Today's Rest Day",
-          displayDate: formatDate(new Date()),
+          headerLabel: selectedDate ? getDateLabel(dateToKey(selectedDate)) : "Today's Rest Day",
+          displayDate: formatDate(displayDateObj),
           quote: restDayQuote,
           showDoneStamp: false,
+          dateOverridden: !!selectedDate,
         };
       }
+      const displayDateObj = selectedDate || new Date();
       return {
         isRestDay: false,
-        headerLabel: "Today's Workout",
+        headerLabel: selectedDate ? getDateLabel(dateToKey(selectedDate)) : "Today's Workout",
         dayType: todayIsPush ? 'Push' : 'Pull',
-        displayDate: formatDate(new Date()),
+        displayDate: formatDate(displayDateObj),
         colors: todayColors,
         warmups: todayWarmups,
         upperExercise: getExerciseAtIndex(todayUpperKey),
@@ -1334,6 +1367,7 @@ export default function App() {
         showDoneStamp: false,
         isPush: todayIsPush,
         canSkip: true,
+        dateOverridden: !!selectedDate,
       };
     }
     return getHistoryPageData(historyIndex);
@@ -1545,6 +1579,7 @@ export default function App() {
               displayDate={currentPageData.displayDate}
               quote={currentPageData.quote}
               showDoneStamp={currentPageData.showDoneStamp}
+              onDatePress={isViewingToday && !completedToday ? () => setShowDatePicker(true) : undefined}
               style={styles.pageFront}
               animatedStyle={{
                 transform: [{ translateX: slideAnim.interpolate({
@@ -1600,6 +1635,7 @@ export default function App() {
               onSkip={skipExercise}
               isPush={currentPageData.isPush}
               showDoneStamp={currentPageData.showDoneStamp}
+              onDatePress={isViewingToday && !completedToday ? () => setShowDatePicker(true) : undefined}
               style={styles.pageFront}
               animatedStyle={{
                 transform: [{ translateX: slideAnim.interpolate({
@@ -2102,6 +2138,46 @@ export default function App() {
           </View>
         )}
 
+        {/* Date Picker Modal */}
+        {showDatePicker && (
+          <Modal
+            transparent
+            visible={showDatePicker}
+            animationType="fade"
+            onRequestClose={() => setShowDatePicker(false)}
+          >
+            <View style={styles.datePickerOverlay}>
+              <View style={styles.datePickerContainer}>
+                <View style={styles.datePickerHeader}>
+                  <Text style={styles.datePickerTitle}>Log workout for</Text>
+                  <TouchableOpacity onPress={() => { setSelectedDate(null); setShowDatePicker(false); }}>
+                    <Text style={styles.datePickerReset}>Reset to today</Text>
+                  </TouchableOpacity>
+                </View>
+                <DateTimePicker
+                  value={selectedDate || new Date()}
+                  mode="date"
+                  display="spinner"
+                  maximumDate={new Date()}
+                  onChange={(event, date) => {
+                    if (event.type === 'set' && date) {
+                      setSelectedDate(date);
+                    }
+                  }}
+                  style={styles.datePicker}
+                />
+                <TouchableOpacity
+                  style={[styles.datePickerDoneBtn, { backgroundColor: todayIsRestDay ? COLORS.rest.primary : (todayIsPush ? COLORS.push.primary : COLORS.pull.primary) }]}
+                  onPress={() => setShowDatePicker(false)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.datePickerDoneBtnText}>Done</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+        )}
+
         {/* Notes Modal */}
         {showNotesModal && (
           <Modal
@@ -2264,6 +2340,53 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: COLORS.text.muted,
     marginTop: 6,
+  },
+  dateTappable: {
+    textDecorationLine: 'underline',
+  },
+  datePickerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  datePickerContainer: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 40,
+    paddingTop: 16,
+    paddingHorizontal: 20,
+  },
+  datePickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  datePickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.text.primary,
+  },
+  datePickerReset: {
+    fontSize: 14,
+    color: COLORS.text.muted,
+    textDecorationLine: 'underline',
+  },
+  datePicker: {
+    height: 200,
+  },
+  datePickerDoneBtn: {
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  datePickerDoneBtnText: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   swipeIndicator: {
     flexDirection: 'row',
